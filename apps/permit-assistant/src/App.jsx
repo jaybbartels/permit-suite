@@ -574,7 +574,7 @@ async function claude(system, userMsg, maxTokens = 6000, tools = null) {
     messages: [{ role: "user", content: userMsg }],
   };
   if (tools) body.tools = tools;
-  const r = await fetch("https://api.anthropic.com/v1/messages", {
+  const r = await fetch("/api/claude", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
