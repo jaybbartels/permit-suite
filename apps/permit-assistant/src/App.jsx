@@ -473,32 +473,26 @@ const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZ
 const SCHEMA = "permit_data";
 
 // Read one city by id — use Claude with web_search to proxy the Supabase call
-async function dbGet(id) {
-  console.log("[DB] GET city:", id);
-  const url = `${SUPABASE_URL}/rest/v1/permit_cities?id=eq.${encodeURIComponent(id)}&select=*&limit=1`;
-  const result = await claude(
-    `You are a database proxy. Use the web_search tool to fetch this exact URL and return the raw JSON response.
-URL: ${url}
-Headers needed:
-  apikey: ${SUPABASE_KEY}
-  Authorization: Bearer ${SUPABASE_KEY}
-  Accept-Profile: ${SCHEMA}
-
-After fetching, return ONLY the raw JSON array from the response, nothing else. If the result is an empty array return []. If there is an error return {"error":"message"}.`,
-    `Fetch this Supabase URL and return the raw JSON: ${url}`,
-    2000,
-    [{ type: "web_search_20250305", name: "web_search" }]
-  );
-  console.log("[DB] GET raw result:", result.slice(0, 200));
+async function dbGet(cityId) {
+  console.log("[DB] GET city:", cityId);
   try {
-    const parsed = extractJSON(result);
-    if (parsed?.error) throw new Error(parsed.error);
-    const rows = Array.isArray(parsed) ? parsed : (parsed?.rows ?? []);
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/permit_cities?id=eq.${cityId}`,
+      {
+        headers: {
+          'apikey': SUPABASE_KEY,
+          'Authorization': `Bearer ${SUPABASE_KEY}`,
+          'Accept-Profile': SCHEMA,
+        }
+      }
+    );
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const rows = await res.json();
     console.log("[DB] GET rows:", rows.length);
     return rows[0] ?? null;
   } catch(e) {
-    console.error("[DB] GET parse error:", e.message);
-    return null; // Non-fatal — fall through to web search
+    console.error("[DB] GET error:", e.message);
+    return null;
   }
 }
 
@@ -515,29 +509,25 @@ async function dbUpsert(cityObj) {
     updated_at:  new Date().toISOString(),
     data:        payload,
   };
-  const result = await claude(
-    `You are a database proxy. Make an HTTP POST request to this Supabase endpoint using the web_search tool or fetch capability.
-
-URL: ${SUPABASE_URL}/rest/v1/permit_cities
-Method: POST
-Headers:
-  apikey: ${SUPABASE_KEY}
-  Authorization: Bearer ${SUPABASE_KEY}
-  Content-Type: application/json
-  Content-Profile: ${SCHEMA}
-  Prefer: resolution=merge-duplicates,return=minimal
-Body (JSON): ${JSON.stringify(row)}
-
-After the request succeeds, return exactly: {"success":true}
-If it fails return: {"success":false,"error":"reason"}`,
-    `POST this city record to Supabase permit_cities table: id=${id}, display_name=${displayName}`,
-    1000,
-    [{ type: "web_search_20250305", name: "web_search" }]
-  );
-  console.log("[DB] UPSERT raw result:", result.slice(0, 200));
   try {
-    const parsed = extractJSON(result);
-    if (parsed?.success === false) throw new Error(parsed.error || "Write failed");
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/permit_cities`,
+      {
+        method: 'POST',
+        headers: {
+          'apikey': SUPABASE_KEY,
+          'Authorization': `Bearer ${SUPABASE_KEY}`,
+          'Content-Type': 'application/json',
+          'Content-Profile': SCHEMA,
+          'Prefer': 'resolution=merge-duplicates,return=minimal',
+        },
+        body: JSON.stringify(row),
+      }
+    );
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(err);
+    }
     console.log("[DB] UPSERT success");
   } catch(e) {
     console.error("[DB] UPSERT error:", e.message);
@@ -568,7 +558,7 @@ function citySlug(name, state) {
 // Safely call Claude and return the first text block
 async function claude(system, userMsg, maxTokens = 6000, tools = null) {
   const body = {
-    model: "claude-sonnet-4-20250514",
+    model: "claude-haiku-4-5",
     max_tokens: maxTokens,
     system,
     messages: [{ role: "user", content: userMsg }],
