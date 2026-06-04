@@ -1,851 +1,1022 @@
-import { useState, useEffect, useRef } from "react";
-import { getUser, signIn, signUp, signOut } from "./auth.js";
+import React from "react";
+import { useState, useEffect, useCallback } from "react";
+import { getSession, getUser, signIn, signUp, signOut, saveSession } from "./auth.js";
+import { dbSaveApplication, dbLoadApplications, dbLoadApplication, dbSaveDocument } from "./db.js";
 
-var API_URL = "/api/claude";
-var MDL = "claude-haiku-4-5-20251001";
-var CACHE_PREFIX = "cre_v2_";
-var CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
-
-function delay(ms) {
-  return new Promise(function(resolve) { setTimeout(resolve, ms); });
-}
-
-// --- Cache helpers (in-memory Map, works everywhere including Claude sandbox) ---
-var _cache = new Map();
-function cacheGet(key) {
+// ── API proxy ─────────────────────────────────────────────────────────────────
+const API = "/api/claude";
+async function callClaude(payload) {
   try {
-    var obj = _cache.get(CACHE_PREFIX + key);
-    if (!obj) return null;
-    if (Date.now() - obj.ts > CACHE_TTL) { _cache.delete(CACHE_PREFIX + key); return null; }
-    return obj.val;
-  } catch(e) { return null; }
+    const res = await fetch(API, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "claude-haiku-4-5-20251001", ...payload }),
+    });
+    if (!res.ok) return { ok: false };
+    const data = await res.json();
+    return { ok: true, data };
+  } catch { return { ok: false }; }
 }
-function cacheSet(key, val) {
-  try { _cache.set(CACHE_PREFIX + key, {ts: Date.now(), val: val}); } catch(e) {}
-}
-function cacheKey() {
-  return Array.prototype.slice.call(arguments).join("|").toLowerCase().replace(/\s+/g,"_").slice(0,80);
-}
-
-// --- Web search via Anthropic tool use - pulls live Zillow/Redfin/LoopNet data ---
-function webSearch(query) {
-  return fetch(API_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: MDL,
-      max_tokens: 1024,
-      tools: [{type:"web_search_20250305",name:"web_search"}],
-      messages: [{role:"user",content:query}]
-    })
-  }).then(function(r){ return r.json(); }).then(function(data) {
-    if (data.error) throw new Error(data.error.message);
-    var text = "";
-    (data.content||[]).forEach(function(b){ if(b.type==="text") text += b.text; });
-    return text.trim();
-  });
+function extractText(data) {
+  return (data?.content || []).filter(b => b.type === "text").map(b => b.text).join("").trim();
 }
 
-// callAI - with optional web search tool for live property data
-function callAI(msgs, sys, tok, useSearch) {
-  tok = tok || 600;
-  var body = { model: MDL, max_tokens: tok, system: sys, messages: msgs };
-  if (useSearch) body.tools = [{type:"web_search_20250305",name:"web_search"}];
-  return fetch(API_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body)
-  }).then(function(res) {
-    return res.json();
-  }).then(function(data) {
-    if (data.error) throw new Error(data.error.message || "API error");
-    if (!data.content || !data.content.length) throw new Error("Empty response");
-    return data.content.map(function(b) { return b.text || ""; }).join("");
-  });
-}
+// ── Permit catalogue (from permit_data in Supabase) ───────────────────────────
+// Categories and sub-types
+const PERMIT_CATEGORIES = [
+  {
+    id: "new-construction",
+    label: "New Construction",
+    icon: "🏗️",
+    desc: "Build a new structure or dwelling",
+    subTypes: [
+      { id: "single-family", label: "Single Family Home" },
+      { id: "adu-new", label: "New ADU (detached)" },
+      { id: "garage", label: "New Garage" },
+      { id: "accessory-structure", label: "Accessory Structure" },
+    ]
+  },
+  {
+    id: "addition-remodel",
+    label: "Addition / Remodel",
+    icon: "🔨",
+    desc: "Expand or renovate existing structure",
+    subTypes: [
+      { id: "kitchen", label: "Kitchen Remodel" },
+      { id: "bathroom", label: "Bathroom Remodel / Addition" },
+      { id: "bedroom", label: "Bedroom Addition" },
+      { id: "room-addition", label: "Room Addition" },
+      { id: "whole-house", label: "Whole House Remodel" },
+    ]
+  },
+  {
+    id: "adu",
+    label: "ADU",
+    icon: "🏠",
+    desc: "Accessory dwelling unit",
+    subTypes: [
+      { id: "detached", label: "Detached ADU" },
+      { id: "attached", label: "Attached ADU" },
+      { id: "garage-conversion", label: "Garage Conversion ADU" },
+      { id: "jadu", label: "Junior ADU (JADU)" },
+    ]
+  },
+  {
+    id: "fence-gate-wall",
+    label: "Fence / Gate / Wall",
+    icon: "🚧",
+    desc: "Boundary and entry structures",
+    subTypes: [
+      { id: "fence", label: "Fence" },
+      { id: "gate", label: "Gate" },
+      { id: "retaining-wall", label: "Retaining Wall" },
+    ]
+  },
+  {
+    id: "pool-spa",
+    label: "Pool / Spa",
+    icon: "🏊",
+    desc: "New pool or large remodel",
+    subTypes: [
+      { id: "pool", label: "Swimming Pool" },
+      { id: "spa", label: "Spa / Hot Tub" },
+      { id: "pool-spa", label: "Pool + Spa Combo" },
+    ]
+  },
+  {
+    id: "mep",
+    label: "MEP Work",
+    icon: "⚡",
+    desc: "Mechanical / electrical / plumbing",
+    subTypes: [
+      { id: "electrical", label: "Electrical" },
+      { id: "plumbing", label: "Plumbing" },
+      { id: "mechanical-hvac", label: "HVAC / Mechanical" },
+      { id: "solar", label: "Solar Installation" },
+      { id: "ev-charger", label: "EV Charger" },
+    ]
+  },
+];
 
-// Fetch live property data from Zillow/Redfin/LoopNet then summarise in one call
-function fetchPropertyData(location, acreage) {
-  var ck = cacheKey("prop", location, acreage);
-  var cached = cacheGet(ck);
-  if (cached) return Promise.resolve(cached);
-
-  var searchQuery = "site:zillow.com OR site:redfin.com OR site:loopnet.com OR site:crexi.com " + location + " commercial land zoning";
-  var sys = "You are a CRE research analyst. Use the web search results to extract real property data for this location. Return ONLY a JSON object with these fields: zoning (string), currentUse (string), landArea (string), jurisdiction (string), marketContext (2 sentences from real data), demographics (2 sentences), infrastructure (1 sentence), constraints (1 sentence), opportunityScore (integer 1-10), opportunityRationale (1 sentence), dataSource (comma-separated list of sources used e.g. Zillow,LoopNet). No markdown.";
-  var msg = "Find property and market data for: " + location + (acreage ? ", approximately " + acreage + " acres" : "") + ". Search Zillow, Redfin, LoopNet, and CREXI for comparable listings, zoning, and market conditions.";
-
-  return callAI([{role:"user",content:msg}], sys, 800, true)
-    .then(function(raw) {
-      try {
-        var d = tryJSON(raw);
-        cacheSet(ck, d);
-        return d;
-      } catch(e) { return null; }
-    }).catch(function(){ return null; });
-}
-
-// Fetch comparable sales/listings from real estate APIs
-function fetchComparables(location, devType) {
-  var ck = cacheKey("comps", location, devType);
-  var cached = cacheGet(ck);
-  if (cached) return Promise.resolve(cached);
-
-  var sys = "You are a CRE appraiser. Search for recent comparable sales and active listings. Return ONLY a JSON object: {avgPricePerSqft:number, avgCapRate:number, medianLandValue:number, activeListings:number, recentSales:number, priceRange:string, dataSource:string}. All numbers plain integers/decimals, no $ signs.";
-  var msg = "Search Zillow, LoopNet, CREXI, and Redfin for comparable " + devType + " properties near " + location + ". Find recent sales prices, cap rates, and land values per sqft.";
-
-  return callAI([{role:"user",content:msg}], sys, 600, true)
-    .then(function(raw) {
-      try {
-        var d = tryJSON(raw);
-        cacheSet(ck, d);
-        return d;
-      } catch(e) { return null; }
-    }).catch(function(){ return null; });
-}
-
-function tryJSON(raw) {
-  if (!raw) throw new Error("no response");
-  // strip markdown fences
-  var s = raw.replace(/```[a-z]*/g,"").replace(/```/g,"").trim();
-  // direct parse
-  try { return JSON.parse(s); } catch(e) {}
-  // find outermost object
-  var a = s.indexOf("{"), b = s.lastIndexOf("}");
-  if (a >= 0 && b > a) {
-    try { return JSON.parse(s.slice(a, b+1)); } catch(e) {}
-    // fix trailing commas
-    try { return JSON.parse(s.slice(a, b+1).replace(/,\s*([}\]])/g,"$1")); } catch(e) {}
-  }
-  // find outermost array
-  var c = s.indexOf("["), d = s.lastIndexOf("]");
-  if (c >= 0 && d > c) {
-    try { return JSON.parse(s.slice(c, d+1)); } catch(e) {}
-  }
-  throw new Error("Cannot parse. Got: " + s.slice(0, 80));
-}
-
-function dollars(n) {
-  return "$" + Number(n).toLocaleString();
-}
-
-var MONO = "DM Mono, monospace";
-var SERIF = "Playfair Display, serif";
-var TXT = "Crimson Text, serif";
-var BROWN = "#5C4A2A";
-var TAN = "#C4A882";
-var CREAM = "#F7F2E8";
-var DARK = "#2C1F0E";
-
-// Default permit data used when AI cannot return specific local data
-var DEFAULT_COMMERCIAL_PERMITS = {
-  totalCostLow: 45000,
-  totalCostHigh: 180000,
-  costNote: "General commercial permit cost ranges. Actual costs vary significantly by jurisdiction, project size, and complexity.",
-  permits: [
-    { name: "Zoning Approval / Variance", type: "Zoning", costLow: 3000, costHigh: 15000, timelineDays: "60-120 days", notes: "Required to confirm land use is permitted or to obtain a variance for non-conforming uses." },
-    { name: "Environmental Site Assessment (Phase I/II)", type: "Environmental", costLow: 3500, costHigh: 12000, timelineDays: "30-60 days", notes: "Identifies potential environmental contamination before development begins; lenders typically require Phase I." },
-    { name: "Grading & Drainage Permit", type: "Building", costLow: 2000, costHigh: 8000, timelineDays: "30-45 days", notes: "Required for any earthwork, grading, or changes to site drainage and stormwater management." },
-    { name: "Building Permit", type: "Building", costLow: 8000, costHigh: 50000, timelineDays: "45-90 days", notes: "Core permit covering structural, electrical, plumbing, and mechanical systems for all new construction." },
-    { name: "Fire Safety & Sprinkler Permit", type: "Building", costLow: 2500, costHigh: 12000, timelineDays: "30-60 days", notes: "Required for fire suppression systems, alarms, and egress compliance in commercial buildings." },
-    { name: "Utility Connection Permits", type: "Utility", costLow: 5000, costHigh: 25000, timelineDays: "30-90 days", notes: "Covers connections to municipal water, sewer, gas, and electrical grid including impact fees." },
-    { name: "ADA Compliance Review", type: "Building", costLow: 1500, costHigh: 5000, timelineDays: "14-30 days", notes: "Ensures all public-facing commercial spaces meet Americans with Disabilities Act accessibility standards." },
-    { name: "Occupancy Permit / Certificate of Occupancy", type: "Building", costLow: 500, costHigh: 3000, timelineDays: "14-30 days after completion", notes: "Final inspection sign-off confirming the building meets all code requirements before occupancy." }
-  ]
+// ── Styles ────────────────────────────────────────────────────────────────────
+const C = {
+  navy:   "#0F2942",
+  blue:   "#1B4F82",
+  sky:    "#2E86C1",
+  light:  "#EBF5FB",
+  gray:   "#F4F6F7",
+  border: "#D5D8DC",
+  text:   "#1A252F",
+  muted:  "#7F8C8D",
+  green:  "#1E8449",
+  red:    "#C0392B",
+  orange: "#E67E22",
 };
 
-var DEFAULT_RESIDENTIAL_PERMITS = {
-  totalCostLow: 25000,
-  totalCostHigh: 95000,
-  costNote: "General residential development permit cost ranges. Actual fees vary by jurisdiction, unit count, and project size.",
-  permits: [
-    { name: "Subdivision / Plat Approval", type: "Zoning", costLow: 5000, costHigh: 20000, timelineDays: "90-180 days", notes: "Required to divide land into individual lots; involves public hearings and planning commission review." },
-    { name: "Environmental Review", type: "Environmental", costLow: 3000, costHigh: 10000, timelineDays: "45-90 days", notes: "Assesses impact on wetlands, floodplains, wildlife habitat, and NEPA compliance if federal funding is involved." },
-    { name: "Grading & Erosion Control Permit", type: "Building", costLow: 2000, costHigh: 8000, timelineDays: "30-45 days", notes: "Governs earthwork and erosion prevention during construction to protect surrounding waterways." },
-    { name: "Building Permits (per unit)", type: "Building", costLow: 8000, costHigh: 30000, timelineDays: "30-60 days", notes: "Covers structural, mechanical, electrical, and plumbing for each residential unit constructed." },
-    { name: "Utility & Infrastructure Permits", type: "Utility", costLow: 4000, costHigh: 18000, timelineDays: "45-90 days", notes: "Water, sewer, gas, and electrical service connections plus any required road or sidewalk improvements." },
-    { name: "School & Park Impact Fees", type: "Zoning", costLow: 2000, costHigh: 8000, timelineDays: "At permit issuance", notes: "One-time fees paid to offset infrastructure demand created by new residents." },
-    { name: "Certificate of Occupancy", type: "Building", costLow: 500, costHigh: 2000, timelineDays: "7-21 days after completion", notes: "Final inspection confirming each unit meets building code before residents may move in." }
-  ]
-};
-
-function getDefaultPermits(title) {
-  var t = (title || "").toLowerCase();
-  if (t.indexOf("commercial") >= 0 || t.indexOf("retail") >= 0 || t.indexOf("office") >= 0 || t.indexOf("industrial") >= 0 || t.indexOf("mixed") >= 0) {
-    return DEFAULT_COMMERCIAL_PERMITS;
+const css = `
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: ${C.gray}; color: ${C.text}; }
+  input, textarea, select {
+    font-family: inherit; font-size: 14px; color: ${C.text};
+    border: 1.5px solid ${C.border}; border-radius: 6px;
+    padding: 9px 12px; width: 100%; outline: none;
+    transition: border-color 0.15s;
+    background: #fff;
   }
-  return DEFAULT_RESIDENTIAL_PERMITS;
-}
+  input:focus, textarea:focus, select:focus { border-color: ${C.sky}; }
+  button { font-family: inherit; cursor: pointer; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes fadeUp { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+  .fadeUp { animation: fadeUp 0.3s ease; }
+`;
 
-function Spin(props) {
-  var sz = props.s ? 13 : 19;
-  return React.createElement("div", {
-    style: { display:"flex", alignItems:"center", gap:8, color:"#8B7355", fontFamily:TXT, fontSize:props.s?13:16 }
-  },
-    React.createElement("div", { style: {
-      width:sz, height:sz, borderRadius:"50%",
-      border:"2px solid "+TAN, borderTopColor:BROWN,
-      animation:"spin 0.8s linear infinite", flexShrink:0
-    }}),
-    props.label || (props.s ? "Loading..." : "Analyzing...")
+// ── Spinner ───────────────────────────────────────────────────────────────────
+function Spinner({ size = 16, color = C.sky }) {
+  return (
+    <span style={{ display:"inline-block", width:size, height:size, border:`2px solid ${color}33`, borderTopColor:color, borderRadius:"50%", animation:"spin 0.7s linear infinite", flexShrink:0 }} />
   );
 }
 
-function Tag(props) {
-  return React.createElement("span", {
-    style: { fontFamily:MONO, fontSize:9, textTransform:"uppercase", color:"#8B7355", background:"#EDE4D6", padding:"2px 7px", borderRadius:2, letterSpacing:"0.06em" }
-  }, props.children);
-}
-
-function SecLabel(props) {
-  return React.createElement("div", {
-    style: { fontFamily:MONO, fontSize:9, textTransform:"uppercase", letterSpacing:"0.12em", color:props.color||"#8B7355", marginBottom:10 }
-  }, props.children);
-}
-
-function BulletList(props) {
-  return React.createElement("div", { style:{marginBottom:24} },
-    React.createElement(SecLabel, {color:props.color}, props.title),
-    React.createElement("div", { style:{display:"flex",flexDirection:"column",gap:8} },
-      (props.items||[]).map(function(item, i) {
-        return React.createElement("div", {
-          key: i,
-          style: { padding:"11px 15px", background:"#FDFAF5", border:"1px solid #E8DCC8", borderLeft:"3px solid "+props.color, borderRadius:2, fontFamily:TXT, fontSize:15, color:"#3D2E18", lineHeight:1.5 }
-        }, item);
-      })
-    )
+// ── Button ────────────────────────────────────────────────────────────────────
+function Btn({ children, onClick, disabled, variant="primary", size="md", loading, style:sx }) {
+  const base = { display:"flex", alignItems:"center", gap:6, border:"none", borderRadius:6, fontWeight:600, cursor:disabled?"not-allowed":"pointer", transition:"all 0.15s", opacity:disabled?0.55:1 };
+  const variants = {
+    primary:   { background: C.navy, color: "#fff", padding: size==="sm"?"7px 14px":"11px 22px", fontSize: size==="sm"?12:14 },
+    secondary: { background: "#fff", color: C.navy, border:`1.5px solid ${C.border}`, padding: size==="sm"?"6px 14px":"10px 22px", fontSize: size==="sm"?12:14 },
+    danger:    { background: C.red, color: "#fff", padding: size==="sm"?"7px 14px":"11px 22px", fontSize: size==="sm"?12:14 },
+    ghost:     { background: "transparent", color: C.sky, padding: size==="sm"?"7px 14px":"11px 22px", fontSize: size==="sm"?12:14 },
+  };
+  return (
+    <button onClick={disabled||loading?undefined:onClick} style={{...base,...variants[variant],...sx}}>
+      {loading && <Spinner size={14} color={variant==="primary"?"#fff":C.sky} />}
+      {children}
+    </button>
   );
 }
 
-function PermitTable(props) {
-  var pd = props.pd;
-  if (!pd) return React.createElement("p", { style:{fontFamily:TXT,fontSize:14,color:"#8B7355",fontStyle:"italic"} }, "Permit details unavailable.");
-  var tc = { Zoning:BROWN, Environmental:"#4A7C59", Building:"#2A5C8B", "State License":"#7C4A7C", Utility:"#7C6A2A", Other:"#8B7355" };
-  return React.createElement("div", null,
-    React.createElement("div", {
-      style: { display:"flex", justifyContent:"space-between", alignItems:"center", background:"#F0E8D8", padding:"10px 14px", borderRadius:2, marginBottom:10, flexWrap:"wrap", gap:8 }
-    },
-      React.createElement("div", null,
-        React.createElement("div", { style:{fontFamily:MONO,fontSize:9,textTransform:"uppercase",color:"#8B7355",marginBottom:4} }, "Estimated Permit Costs"),
-        React.createElement("div", { style:{fontFamily:SERIF,fontSize:17,fontWeight:700,color:DARK} }, dollars(pd.totalCostLow) + " - " + dollars(pd.totalCostHigh))
-      ),
-      React.createElement("div", { style:{fontFamily:MONO,fontSize:9,color:"#8B7355",maxWidth:220,textAlign:"right",lineHeight:1.5} }, pd.costNote)
-    ),
-    React.createElement("table", { style:{width:"100%",borderCollapse:"collapse",fontSize:13} },
-      React.createElement("thead", null,
-        React.createElement("tr", { style:{background:"#EDE4D6"} },
-          ["Permit","Type","Timeline","Est. Cost"].map(function(h,i) {
-            return React.createElement("th", { key:h, style:{fontFamily:MONO,fontSize:9,textTransform:"uppercase",color:BROWN,padding:"7px 10px",textAlign:i===3?"right":"left"} }, h);
-          })
-        )
-      ),
-      React.createElement("tbody", null,
-        (pd.permits||[]).map(function(p,i) {
-          return React.createElement("tr", { key:i, style:{background:i%2===0?"#FDFAF5":"#F7F2E8",borderLeft:"3px solid "+(tc[p.type]||"#8B7355")} },
-            React.createElement("td", { style:{padding:"8px 10px",fontFamily:SERIF,fontSize:14,fontWeight:600,color:DARK} },
-              p.name,
-              React.createElement("div", { style:{fontSize:12,color:"#6B5A3E",fontWeight:400} }, p.notes)
-            ),
-            React.createElement("td", { style:{padding:"8px 10px",fontFamily:MONO,fontSize:10,color:"#6B5A3E"} }, p.type),
-            React.createElement("td", { style:{padding:"8px 10px",fontFamily:MONO,fontSize:10,color:"#6B5A3E"} }, p.timelineDays),
-            React.createElement("td", { style:{padding:"8px 10px",textAlign:"right",fontFamily:MONO,fontSize:11,color:"#3D2E18"} },
-              dollars(p.costLow),
-              React.createElement("div", { style:{color:"#8B7355"} }, "to " + dollars(p.costHigh))
-            )
-          );
-        })
-      )
-    )
+// ── Auth Modal ────────────────────────────────────────────────────────────────
+function AuthModal({ onAuth, allowGuest, onGuest }) {
+  const [mode, setMode] = useState("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  async function handleSubmit() {
+    if (!email.trim() || !password.trim()) return;
+    setLoading(true); setError("");
+    try {
+      if (mode === "login") await signIn(email, password);
+      else await signUp(email, password);
+      onAuth();
+    } catch (e) { setError(e.message); }
+    finally { setLoading(false); }
+  }
+
+  return (
+    <div style={{ minHeight:"100vh", background:C.navy, display:"flex", alignItems:"center", justifyContent:"center", padding:"1rem" }}>
+      <div style={{ background:"#fff", borderRadius:12, padding:"2.5rem", width:"100%", maxWidth:420, boxShadow:"0 20px 60px rgba(0,0,0,0.3)" }}>
+        {/* Logo */}
+        <div style={{ textAlign:"center", marginBottom:"2rem" }}>
+          <div style={{ fontSize:28, marginBottom:8 }}>🏛️</div>
+          <h1 style={{ fontSize:22, fontWeight:700, color:C.navy, marginBottom:4 }}>Permit Assistant</h1>
+          <p style={{ fontSize:13, color:C.muted }}>Step-by-step permit guidance</p>
+        </div>
+
+        {/* Tabs */}
+        <div style={{ display:"flex", borderBottom:`1.5px solid ${C.border}`, marginBottom:"1.5rem" }}>
+          {["login","signup"].map(m => (
+            <button key={m} onClick={()=>{setMode(m);setError("");}}
+              style={{ flex:1, padding:"10px 0", border:"none", background:"none", fontWeight:600, fontSize:14, cursor:"pointer",
+                color: mode===m ? C.navy : C.muted,
+                borderBottom: mode===m ? `2.5px solid ${C.navy}` : "2.5px solid transparent",
+                marginBottom:-1.5 }}>
+              {m==="login" ? "Sign in" : "Create account"}
+            </button>
+          ))}
+        </div>
+
+        <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+          <input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="Email address" onKeyDown={e=>e.key==="Enter"&&handleSubmit()} />
+          <input type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="Password" onKeyDown={e=>e.key==="Enter"&&handleSubmit()} />
+          {error && <p style={{ fontSize:12, color:C.red, background:"#FDEDEC", padding:"8px 12px", borderRadius:6 }}>{error}</p>}
+          <Btn onClick={handleSubmit} loading={loading} disabled={!email.trim()||!password.trim()}>
+            {mode==="login" ? "Sign in" : "Create account"}
+          </Btn>
+        </div>
+
+        {allowGuest && (
+          <>
+            <div style={{ textAlign:"center", margin:"1rem 0", fontSize:12, color:C.muted }}>or</div>
+            <Btn variant="secondary" onClick={onGuest} style={{ width:"100%", justifyContent:"center" }}>
+              Continue as guest
+              <span style={{ fontSize:11, color:C.muted, fontWeight:400 }}>(progress not saved)</span>
+            </Btn>
+          </>
+        )}
+      </div>
+    </div>
   );
 }
 
-function ImplDetail(props) {
-  var s1 = useState(false);
-  var s2 = useState(null);
-  var s3 = useState(false);
-  var s4 = useState(null);
-  var open = s1[0], setOpen = s1[1];
-  var data = s2[0], setData = s2[1];
-  var loading = s3[0], setLoading = s3[1];
-  var err = s4[0], setErr = s4[1];
+// ── Step indicator ────────────────────────────────────────────────────────────
+const STEPS = ["Property", "Permit Type", "Prerequisites", "Documents", "Application", "Submit"];
 
-  function load(e) {
-    e.stopPropagation();
-    if (data) { setOpen(!open); return; }
-    setOpen(true); setLoading(true); setErr(null);
-    var ck = cacheKey("impl", props.location, props.opt.title, props.acreage||"");
-    var hit = cacheGet(ck);
-    if (hit) { setData(hit); setLoading(false); return; }
-    var sys = "CRE permit specialist. Return ONLY JSON: {permits:[{name,type,costLow,costHigh,timelineDays,notes}],totalCostLow,totalCostHigh,costNote}. type=Zoning|Environmental|Building|State License|Utility|Other. Plain integers.";
-    var msg = props.location+(props.acreage?", "+props.acreage+" acres":"")+". "+props.opt.title+". List 5-8 permits with costs.";
-    callAI([{role:"user",content:msg}], sys, 900).then(function(raw) {
-      try {
-        var d = tryJSON(raw);
-        d.totalCostLow = Math.abs(Number(d.totalCostLow)||0);
-        d.totalCostHigh = Math.abs(Number(d.totalCostHigh)||0);
-        d.permits = (d.permits||[]).map(function(p){return Object.assign({},p,{costLow:Math.abs(Number(p.costLow)||0),costHigh:Math.abs(Number(p.costHigh)||0)});});
-        cacheSet(ck, d);
-        setData(d);
-      } catch(e) { setData(getDefaultPermits(props.opt.title)); }
-      setLoading(false);
-    }).catch(function(e) { setData(getDefaultPermits(props.opt.title)); setLoading(false); });
-  }
-
-  return React.createElement("div", { onClick:function(e){e.stopPropagation();} },
-    React.createElement("button", {
-      onClick: load,
-      style: { background:"none",border:"none",padding:0,cursor:"pointer",fontFamily:MONO,fontSize:10,textTransform:"uppercase",color:BROWN,textDecoration:"underline",marginTop:14,display:"inline-block" }
-    }, (open?"[hide]":"[show]") + " Implementation Details & Permit Costs"),
-    open && React.createElement("div", { style:{marginTop:12,borderTop:"1px dashed #D4C4A8",paddingTop:14} },
-      loading && React.createElement(Spin, {s:true}),
-      err && React.createElement("div", null,
-        React.createElement("div", { style:{fontFamily:MONO,fontSize:11,color:"#8B1A1A"} }, err),
-        React.createElement("button", {
-          onClick: function(e) { e.stopPropagation(); setData(null); setErr(null); setOpen(false); setTimeout(function(){load(e);},100); },
-          style: { marginTop:6,background:"none",border:"1px solid "+TAN,color:BROWN,padding:"4px 10px",fontFamily:MONO,fontSize:10,textTransform:"uppercase",cursor:"pointer",borderRadius:2 }
-        }, "Retry")
-      ),
-      data && React.createElement(PermitTable, {pd:data})
-    )
-  );
-}
-
-function OptionCard(props) {
-  var sel = props.selected === props.index;
-  var opt = props.opt;
-  return React.createElement("div", {
-    style: { border:sel?"2px solid "+BROWN:"1.5px solid #D4C4A8", borderRadius:2, padding:"22px 26px", background:sel?"#F5EFE4":"#FDFAF5", boxShadow:sel?"0 6px 20px rgba(92,74,42,0.12)":"none", transition:"all 0.2s" }
-  },
-    React.createElement("div", { onClick:function(){props.onSelect(props.index);}, style:{display:"flex",alignItems:"flex-start",gap:16,cursor:"pointer"} },
-      React.createElement("div", { style:{width:32,height:32,borderRadius:"50%",background:sel?BROWN:TAN,color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontFamily:SERIF,fontSize:13,fontWeight:700,flexShrink:0} },
-        ["A","B","C"][props.index]
-      ),
-      React.createElement("div", { style:{flex:1} },
-        React.createElement("div", { style:{fontFamily:SERIF,fontSize:18,fontWeight:600,color:DARK,marginBottom:6} }, opt.title),
-        React.createElement("div", { style:{fontFamily:TXT,fontSize:15,color:"#6B5A3E",lineHeight:1.55} }, opt.summary),
-        React.createElement("div", { style:{display:"flex",gap:8,marginTop:10,flexWrap:"wrap"} },
-          (opt.tags||[]).map(function(t) { return React.createElement(Tag, {key:t}, t); })
-        )
-      )
-    ),
-    React.createElement("div", { style:{marginLeft:48} },
-      React.createElement(ImplDetail, { location:props.location, acreage:props.acreage, opt:opt })
-    )
-  );
-}
-
-function buildPDFHtml(ranked, location, acreage) {
-  var date = new Date().toLocaleDateString("en-US",{year:"numeric",month:"long",day:"numeric"});
-  var loc = location + (acreage ? " - " + acreage + " acres" : "");
-  var rc = ["#4A7C59",BROWN,"#8B7355"];
-  var tc = {Zoning:BROWN,Environmental:"#4A7C59",Building:"#2A5C8B","State License":"#7C4A7C",Utility:"#7C6A2A",Other:"#8B7355"};
-
-  function pblock(pd) {
-    if (!pd) return "<p style='color:#8B7355'>Permit details unavailable.</p>";
-    var rows = "";
-    for (var i=0;i<pd.permits.length;i++) {
-      var p=pd.permits[i];
-      rows += "<tr style='border-left:3px solid "+(tc[p.type]||"#8B7355")+"'><td style='padding:8px'>"+p.name+"<br><small style='color:#6B5A3E'>"+p.notes+"</small></td><td style='padding:8px;font-size:10px'>"+p.type+"</td><td style='padding:8px;font-size:10px'>"+p.timelineDays+"</td><td style='padding:8px;text-align:right'>"+dollars(p.costLow)+" to "+dollars(p.costHigh)+"</td></tr>";
-    }
-    return "<p><b>Permit Costs: "+dollars(pd.totalCostLow)+" - "+dollars(pd.totalCostHigh)+"</b> - "+pd.costNote+"</p><table style='width:100%;border-collapse:collapse;font-size:12px;margin-top:8px'><thead><tr style='background:#EDE4D6'><th style='padding:6px;text-align:left'>Permit</th><th style='padding:6px;text-align:left'>Type</th><th style='padding:6px;text-align:left'>Timeline</th><th style='padding:6px;text-align:right'>Cost</th></tr></thead><tbody>"+rows+"</tbody></table>";
-  }
-
-  var srows = "";
-  for (var i=0;i<ranked.length;i++) {
-    var r=ranked[i];
-    srows += "<tr style='border-left:4px solid "+rc[i]+"'><td style='padding:10px'>"+(i+1)+"</td><td style='padding:10px;font-weight:600'>"+r.opt.title+"</td><td style='padding:10px;text-align:right'>"+dollars(r.estimatedValue)+"</td><td style='padding:10px;text-align:right'>"+dollars(r.estimatedCost)+"</td><td style='padding:10px;text-align:right;font-weight:700;color:"+rc[i]+"'>"+dollars(r.netValue)+"</td><td style='padding:10px;text-align:right;color:"+rc[i]+"'>"+r.roi+"%</td></tr>";
-  }
-
-  var cards = "";
-  for (var j=0;j<ranked.length;j++) {
-    var r=ranked[j];
-    var hbg=j===0?BROWN:"#F0E8D8", tcol=j===0?"#F7F2E8":DARK, scol=j===0?"#D4C4A8":"#6B5A3E", lcol=j===0?TAN:"#8B7355", ncol=j===0?"#F7F2E8":rc[j];
-    var tags="";
-    (r.opt.tags||[]).forEach(function(t){tags+="<span style='font-family:monospace;font-size:9px;text-transform:uppercase;background:#EDE4D6;color:"+BROWN+";padding:2px 6px;border-radius:2px;margin-right:4px'>"+t+"</span>";});
-    cards += "<div style='margin-bottom:28px;border:1.5px solid #D4C4A8;border-radius:3px;overflow:hidden;page-break-inside:avoid'>"
-      +"<div style='background:"+hbg+";padding:16px 22px'>"
-      +"<div style='font-size:9px;text-transform:uppercase;color:"+lcol+";margin-bottom:4px'>Rank "+(j+1)+" by Net Value</div>"
-      +"<div style='font-family:Georgia,serif;font-size:20px;font-weight:700;color:"+tcol+"'>"+r.opt.title+"</div>"
-      +"<div style='font-size:13px;color:"+scol+";margin-top:4px'>"+r.opt.summary+"</div>"
-      +"<div style='margin-top:6px;font-weight:700;color:"+ncol+"'>Net: "+dollars(r.netValue)+" | ROI: "+r.roi+"%</div></div>"
-      +"<div style='padding:16px 22px;background:#FDFAF5'>"
-      +"<p><b>Completed Value:</b> "+dollars(r.estimatedValue)+" - "+r.valuationBasis+"</p>"
-      +"<p style='margin-top:6px'><b>Dev. Cost:</b> "+dollars(r.estimatedCost)+"</p>"
-      +"<p style='margin-top:6px'>"+r.implOverview+"</p>"
-      +"<div style='margin-top:12px'>"+pblock(r.permitData)+"</div></div></div>";
-  }
-
-  return "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Land Use Report</title>"
-    +"<style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Georgia,serif;color:"+DARK+";background:"+CREAM+";padding:40px;-webkit-print-color-adjust:exact;print-color-adjust:exact}@media print{.np{display:none}}</style>"
-    +"</head><body><div style='max-width:820px;margin:0 auto'>"
-    +"<h1 style='font-size:28px;margin-bottom:6px'>Development Evaluation Report</h1>"
-    +"<p style='color:"+BROWN+";margin-bottom:28px'>"+loc+" - "+date+"</p>"
-    +"<h2 style='font-size:13px;text-transform:uppercase;letter-spacing:.1em;color:#8B7355;margin-bottom:12px'>Options Ranked by Net Value</h2>"
-    +"<table style='width:100%;border-collapse:collapse;font-size:13px;margin-bottom:32px'><thead><tr style='background:"+BROWN+";color:"+CREAM+"'>"
-    +"<th style='padding:9px;text-align:left'>Rank</th><th style='padding:9px;text-align:left'>Development</th><th style='padding:9px;text-align:right'>Value</th><th style='padding:9px;text-align:right'>Cost</th><th style='padding:9px;text-align:right'>Net</th><th style='padding:9px;text-align:right'>ROI</th>"
-    +"</tr></thead><tbody>"+srows+"</tbody></table>"
-    +cards
-    +"<div style='padding:12px;background:#EDE4D6;font-size:10px;color:#8B7355;margin-top:16px'>Informational only. Consult a licensed real estate attorney before making decisions.</div>"
-    +"<div class='np' style='margin-top:24px'><button onclick='window.print()' style='background:"+BROWN+";color:"+CREAM+";border:none;padding:12px 24px;font-size:13px;cursor:pointer;border-radius:2px'>Print / Save as PDF</button></div>"
-    +"</div></body></html>";
-}
-
-function openPDF(ranked, location, acreage) {
-  var html = buildPDFHtml(ranked, location, acreage);
-  // Try Blob URL first, fall back to data URI, then document.write
-  try {
-    if (window.Blob && URL.createObjectURL) {
-      var blob = new Blob([html], {type:"text/html"});
-      var url = URL.createObjectURL(blob);
-      var win = window.open(url, "_blank");
-      if (win) {
-        win.onload = function() { setTimeout(function(){ win.focus(); win.print(); }, 800); };
-        setTimeout(function(){ URL.revokeObjectURL(url); }, 60000);
-        return;
-      }
-    }
-  } catch(e) {}
-  // Fallback: open blank window and write HTML directly
-  try {
-    var win2 = window.open("", "_blank");
-    if (win2) {
-      win2.document.open();
-      win2.document.write(html);
-      win2.document.close();
-      setTimeout(function(){ win2.focus(); win2.print(); }, 800);
-      return;
-    }
-  } catch(e) {}
-  // Last resort: data URI
-  try {
-    var encoded = "data:text/html;charset=utf-8," + encodeURIComponent(html);
-    window.open(encoded, "_blank");
-  } catch(e) {
-    alert("Could not open PDF. Please try again or use your browser's print function.");
-  }
-}
-
-function ReportView(props) {
-  var ranked = props.ranked;
-  var rc = ["#4A7C59",BROWN,"#8B7355"];
-
-  return React.createElement("div", { style:{minHeight:"100vh",background:CREAM,fontFamily:TXT} },
-    React.createElement("div", { style:{background:BROWN,padding:"24px 32px"} },
-      React.createElement("div", { style:{maxWidth:820,margin:"0 auto"} },
-        React.createElement("h1", { style:{fontFamily:SERIF,fontSize:28,fontWeight:700,color:CREAM,margin:"0 0 6px 0"} }, "Development Evaluation Report"),
-        React.createElement("div", { style:{fontFamily:MONO,fontSize:11,color:TAN} }, props.location + (props.acreage ? " - " + props.acreage + " acres" : ""))
-      )
-    ),
-    React.createElement("div", { style:{maxWidth:820,margin:"0 auto",padding:"32px 32px 80px"} },
-      React.createElement("div", { style:{display:"flex",gap:10,marginBottom:28,flexWrap:"wrap"} },
-        React.createElement("button", { onClick:props.onBack, style:{fontFamily:MONO,fontSize:11,textTransform:"uppercase",background:"none",border:"1.5px solid #D4C4A8",color:BROWN,padding:"10px 20px",cursor:"pointer",borderRadius:2} }, "Back"),
-        React.createElement("button", { onClick:function(){openPDF(ranked,props.location,props.acreage);}, style:{fontFamily:MONO,fontSize:11,textTransform:"uppercase",background:BROWN,color:CREAM,border:"none",padding:"10px 20px",cursor:"pointer",borderRadius:2} }, "Save as PDF")
-      ),
-      props.warnings && props.warnings.length > 0 && React.createElement("div", { style:{marginBottom:20,padding:"12px 16px",background:"#FFF8EC",border:"1.5px solid #D4A847",borderRadius:2} },
-        React.createElement("div", { style:{fontFamily:MONO,fontSize:9,textTransform:"uppercase",color:"#8B6914",marginBottom:6} }, "Partial Report"),
-        props.warnings.map(function(w,i){ return React.createElement("div", {key:i,style:{fontFamily:TXT,fontSize:13,color:"#7A5C10"}}, "- " + w); })
-      ),
-      React.createElement("div", { style:{marginBottom:32} },
-        React.createElement(SecLabel, null, "Options Ranked by Net Value"),
-        React.createElement("table", { style:{width:"100%",borderCollapse:"collapse",fontSize:13} },
-          React.createElement("thead", null,
-            React.createElement("tr", { style:{background:BROWN} },
-              ["Rank","Development","Est. Value","Est. Cost","Net Value","ROI"].map(function(h,i) {
-                return React.createElement("th", {key:h,style:{fontFamily:MONO,fontSize:9,textTransform:"uppercase",color:CREAM,padding:"10px 12px",textAlign:i>1?"right":"left"}}, h);
-              })
-            )
-          ),
-          React.createElement("tbody", null,
-            ranked.map(function(r,i) {
-              return React.createElement("tr", {key:i,style:{background:i===0?"#F0EAD8":i%2===0?"#FDFAF5":"#F7F2E8",borderLeft:"4px solid "+rc[i]}},
-                React.createElement("td", {style:{padding:"10px 12px",fontFamily:MONO,fontSize:13}}, "#"+(i+1)),
-                React.createElement("td", {style:{padding:"10px 12px",fontFamily:SERIF,fontWeight:600,color:DARK}}, r.opt.title),
-                React.createElement("td", {style:{padding:"10px 12px",textAlign:"right",fontFamily:MONO,fontSize:12,color:"#3D2E18"}}, dollars(r.estimatedValue)),
-                React.createElement("td", {style:{padding:"10px 12px",textAlign:"right",fontFamily:MONO,fontSize:12,color:"#3D2E18"}}, dollars(r.estimatedCost)),
-                React.createElement("td", {style:{padding:"10px 12px",textAlign:"right",fontFamily:MONO,fontSize:13,fontWeight:700,color:rc[i]}}, dollars(r.netValue)),
-                React.createElement("td", {style:{padding:"10px 12px",textAlign:"right",fontFamily:MONO,fontSize:12,color:rc[i],fontWeight:600}}, r.roi+"%")
-              );
-            })
-          )
-        )
-      ),
-      ranked.map(function(r,rank) {
-        return React.createElement("div", {key:rank,style:{marginBottom:28,border:"1.5px solid "+(rank===0?BROWN:"#D4C4A8"),borderRadius:3,overflow:"hidden"}},
-          React.createElement("div", {style:{background:rank===0?BROWN:"#F0E8D8",padding:"16px 22px",display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:12}},
-            React.createElement("div", {style:{flex:1}},
-              React.createElement("div", {style:{fontFamily:MONO,fontSize:9,textTransform:"uppercase",color:rank===0?TAN:"#8B7355",marginBottom:5}}, "Rank "+(rank+1)+" by Net Value"),
-              React.createElement("div", {style:{fontFamily:SERIF,fontSize:21,fontWeight:700,color:rank===0?CREAM:DARK}}, r.opt.title),
-              React.createElement("div", {style:{fontFamily:TXT,fontSize:14,color:rank===0?"#D4C4A8":"#6B5A3E",marginTop:5,lineHeight:1.5}}, r.opt.summary)
-            ),
-            React.createElement("div", {style:{textAlign:"right"}},
-              React.createElement("div", {style:{fontFamily:MONO,fontSize:9,textTransform:"uppercase",color:rank===0?TAN:"#8B7355",marginBottom:3}}, "Net Value"),
-              React.createElement("div", {style:{fontFamily:SERIF,fontSize:24,fontWeight:700,color:rank===0?CREAM:rc[rank]}}, dollars(r.netValue)),
-              React.createElement("div", {style:{fontFamily:MONO,fontSize:11,color:rank===0?TAN:"#8B7355"}}, "ROI "+r.roi+"%")
-            )
-          ),
-          React.createElement("div", {style:{padding:"16px 22px",background:"#FDFAF5",borderBottom:"1px solid #D4C4A8"}},
-            React.createElement(SecLabel, {color:BROWN}, "Financial Summary"),
-            React.createElement("div", {style:{display:"flex",gap:24,flexWrap:"wrap",marginBottom:10}},
-              React.createElement("div", null,
-                React.createElement("div", {style:{fontFamily:MONO,fontSize:9,textTransform:"uppercase",color:"#8B7355",marginBottom:3}}, "Completed Value"),
-                React.createElement("div", {style:{fontFamily:SERIF,fontSize:15,fontWeight:600,color:DARK}}, dollars(r.estimatedValue)),
-                React.createElement("div", {style:{fontFamily:MONO,fontSize:9,color:"#8B7355",marginTop:2}}, r.valuationBasis)
-              ),
-              React.createElement("div", null,
-                React.createElement("div", {style:{fontFamily:MONO,fontSize:9,textTransform:"uppercase",color:"#8B7355",marginBottom:3}}, "Total Dev. Cost"),
-                React.createElement("div", {style:{fontFamily:SERIF,fontSize:15,fontWeight:600,color:DARK}}, dollars(r.estimatedCost))
-              )
-            ),
-            React.createElement("p", {style:{fontFamily:TXT,fontSize:14,color:"#3D2E18",lineHeight:1.6}}, r.implOverview)
-          ),
-          React.createElement("div", {style:{padding:"16px 22px",background:"#FDFAF5"}},
-            React.createElement(SecLabel, {color:BROWN}, "Permit Requirements & Costs"),
-            React.createElement(PermitTable, {pd:r.permitData})
-          )
+function StepBar({ current, completed }) {
+  return (
+    <div style={{ display:"flex", alignItems:"center", padding:"0 2rem", overflowX:"auto" }}>
+      {STEPS.map((label, i) => {
+        const done = completed.includes(i);
+        const active = current === i;
+        return (
+          <div key={i} style={{ display:"flex", alignItems:"center", flexShrink:0 }}>
+            <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:4 }}>
+              <div style={{
+                width:28, height:28, borderRadius:"50%", display:"flex", alignItems:"center", justifyContent:"center",
+                fontSize:12, fontWeight:700,
+                background: done ? C.green : active ? C.navy : "#fff",
+                color: done||active ? "#fff" : C.muted,
+                border: `2px solid ${done ? C.green : active ? C.navy : C.border}`,
+              }}>
+                {done ? "✓" : i+1}
+              </div>
+              <span style={{ fontSize:11, fontWeight: active?600:400, color: active?C.navy:C.muted, whiteSpace:"nowrap" }}>{label}</span>
+            </div>
+            {i < STEPS.length-1 && (
+              <div style={{ width:40, height:2, background: done ? C.green : C.border, margin:"0 4px", marginBottom:18, flexShrink:0 }} />
+            )}
+          </div>
         );
-      }),
-      React.createElement("div", {style:{padding:"14px 18px",background:"#EDE4D6",borderRadius:2,fontFamily:MONO,fontSize:10,color:"#8B7355",lineHeight:1.7}},
-        "Informational only. AI-generated estimates. Consult a licensed real estate attorney and financial advisor before making development decisions."
-      ),
-      React.createElement("div", {style:{marginTop:28,paddingTop:24,borderTop:"2px solid #D4C4A8",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:16}},
-        React.createElement("div", null,
-          React.createElement("div", {style:{fontFamily:SERIF,fontSize:17,fontWeight:600,color:DARK,marginBottom:4}}, "Save this report"),
-          React.createElement("div", {style:{fontFamily:TXT,fontSize:14,color:"#6B5A3E"}}, "Opens print dialog - choose Save as PDF.")
-        ),
-        React.createElement("button", {onClick:function(){openPDF(ranked,props.location,props.acreage);},style:{background:BROWN,color:CREAM,border:"none",padding:"13px 28px",fontFamily:MONO,fontSize:11,textTransform:"uppercase",cursor:"pointer",borderRadius:2}}, "Save Report as PDF")
-      )
-    )
+      })}
+    </div>
   );
 }
 
-export default function App() {
-  var us = useState(getUser()); var user = us[0]; var setUser = us[1];
-  var sa = useState(false); var showAuth = sa[0]; var setShowAuth = sa[1];
-  var st = useState(0); var step = st[0]; var setStep = st[1];
-  var lo = useState(""); var location = lo[0]; var setLocation = lo[1];
-  var ac = useState(""); var acreage = ac[0]; var setAcreage = ac[1];
-  var ld = useState(false); var loading = ld[0]; var setLoading = ld[1];
-  var op = useState(null); var options = op[0]; var setOptions = op[1];
-  var si = useState(null); var selIdx = si[0]; var setSelIdx = si[1];
-  var pe = useState(null); var permits = pe[0]; var setPermits = pe[1];
-  var er = useState(""); var error = er[0]; var setError = er[1];
-  var gr = useState(false); var genRep = gr[0]; var setGenRep = gr[1];
-  var rd = useState(null); var reportData = rd[0]; var setReportData = rd[1];
-  var rs = useState(null); var repStatus = rs[0]; var setRepStatus = rs[1];
-  var pi = useState(null); var propInfo = pi[0]; var setPropInfo = pi[1];
-  var inputRef = useRef();
+// ── Step 0: Property lookup ───────────────────────────────────────────────────
+function StepProperty({ app, onUpdate, onNext }) {
+  const [input, setInput]     = useState(app.address || app.apn || "");
+  const [loading, setLoading] = useState(false);
+  const [found, setFound]     = useState(!!app.owner_name);
+  const [error, setError]     = useState("");
 
-  useEffect(function() {
-    var el = document.createElement("style");
-    el.textContent = "@keyframes spin{to{transform:rotate(360deg)}} @keyframes fu{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}} .fu{animation:fu 0.4s ease forwards} input:focus{outline:none;border-color:"+BROWN+"!important} button:hover{opacity:0.82}";
-    document.head.appendChild(el);
-    return function() { try{document.head.removeChild(el);}catch(e){} };
+  async function lookup() {
+    if (!input.trim()) return;
+    setLoading(true); setError(""); setFound(false);
+    const result = await callClaude({
+      max_tokens: 600,
+      tools: [{ type: "web_search_20250305", name: "web_search" }],
+      system: `You are a property data lookup assistant. Search for the property and return ONLY JSON:
+{"owner_name":"string","address":"full address","apn":"parcel number","city":"city name","state":"CA","zip":"zipcode","lot_size_sqft":number_or_null,"zoning":"string","year_built":number_or_null,"bedrooms":number_or_null,"bathrooms":number_or_null,"sqft":number_or_null}
+If any field is unknown use null. No markdown, no explanation.`,
+      messages: [{ role:"user", content:`Look up property: ${input}\nSearch county assessor records, Zillow, Redfin, or public property records.` }]
+    });
+    if (result.ok) {
+      const text = extractText(result.data);
+      try {
+        const clean = text.replace(/```json|```/g,"").trim();
+        const start = clean.indexOf("{"); const end = clean.lastIndexOf("}");
+        const d = JSON.parse(clean.slice(start, end+1));
+        onUpdate({
+          address: d.address || input,
+          apn: d.apn || "",
+          city: (d.city||"").toLowerCase().replace(/\s+/g,"-") + "-" + (d.state||"ca").toLowerCase(),
+          city_display: `${d.city||""}, ${d.state||"CA"}`,
+          owner_name: d.owner_name || "",
+          parcel_data: d,
+        });
+        setFound(true);
+      } catch {
+        setError("Could not parse property data. Please fill in manually.");
+      }
+    } else {
+      setError("Lookup failed. Please fill in manually.");
+    }
+    setLoading(false);
+  }
+
+  return (
+    <div className="fadeUp">
+      <h2 style={{ fontSize:20, fontWeight:700, color:C.navy, marginBottom:6 }}>Property & Applicant</h2>
+      <p style={{ fontSize:13, color:C.muted, marginBottom:"1.5rem" }}>Enter your property address or APN to auto-fill details.</p>
+
+      {/* Lookup input */}
+      <div style={{ display:"flex", gap:8, marginBottom:"1.5rem" }}>
+        <input value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&lookup()}
+          placeholder="123 Main St, Woodside, CA 94062  —  or —  APN: 075-123-456" style={{ flex:1 }} />
+        <Btn onClick={lookup} loading={loading} disabled={!input.trim()}>
+          {loading ? "Looking up…" : "Look up"}
+        </Btn>
+      </div>
+
+      {error && <p style={{ fontSize:13, color:C.red, marginBottom:"1rem" }}>{error}</p>}
+
+      {/* Property details */}
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:"1.5rem" }}>
+        <div style={{ gridColumn:"1/-1" }}>
+          <label style={{ fontSize:11, fontWeight:600, color:C.muted, textTransform:"uppercase", letterSpacing:"0.05em", display:"block", marginBottom:5 }}>Property Address *</label>
+          <input value={app.address||""} onChange={e=>onUpdate({address:e.target.value})} placeholder="Full property address" />
+        </div>
+        <div>
+          <label style={{ fontSize:11, fontWeight:600, color:C.muted, textTransform:"uppercase", letterSpacing:"0.05em", display:"block", marginBottom:5 }}>APN</label>
+          <input value={app.apn||""} onChange={e=>onUpdate({apn:e.target.value})} placeholder="000-000-000" />
+        </div>
+        <div>
+          <label style={{ fontSize:11, fontWeight:600, color:C.muted, textTransform:"uppercase", letterSpacing:"0.05em", display:"block", marginBottom:5 }}>City</label>
+          <input value={app.city_display||""} onChange={e=>onUpdate({city_display:e.target.value})} placeholder="Woodside, CA" />
+        </div>
+        <div>
+          <label style={{ fontSize:11, fontWeight:600, color:C.muted, textTransform:"uppercase", letterSpacing:"0.05em", display:"block", marginBottom:5 }}>Owner / Applicant Name *</label>
+          <input value={app.owner_name||""} onChange={e=>onUpdate({owner_name:e.target.value})} placeholder="Full legal name" />
+        </div>
+        <div>
+          <label style={{ fontSize:11, fontWeight:600, color:C.muted, textTransform:"uppercase", letterSpacing:"0.05em", display:"block", marginBottom:5 }}>Email (optional)</label>
+          <input type="email" value={app.email||""} onChange={e=>onUpdate({email:e.target.value})} placeholder="your@email.com" />
+        </div>
+        <div>
+          <label style={{ fontSize:11, fontWeight:600, color:C.muted, textTransform:"uppercase", letterSpacing:"0.05em", display:"block", marginBottom:5 }}>Phone (optional)</label>
+          <input type="tel" value={app.phone||""} onChange={e=>onUpdate({phone:e.target.value})} placeholder="(650) 000-0000" />
+        </div>
+      </div>
+
+      {/* Parcel summary if found */}
+      {found && app.parcel_data && (
+        <div style={{ background:C.light, border:`1px solid ${C.sky}33`, borderRadius:8, padding:"1rem", marginBottom:"1.5rem", fontSize:13 }}>
+          <p style={{ fontWeight:600, color:C.navy, marginBottom:6 }}>✓ Property data found</p>
+          <div style={{ display:"flex", gap:24, flexWrap:"wrap", color:C.muted }}>
+            {app.parcel_data.zoning && <span>Zoning: <strong style={{color:C.text}}>{app.parcel_data.zoning}</strong></span>}
+            {app.parcel_data.lot_size_sqft && <span>Lot: <strong style={{color:C.text}}>{Number(app.parcel_data.lot_size_sqft).toLocaleString()} sqft</strong></span>}
+            {app.parcel_data.year_built && <span>Built: <strong style={{color:C.text}}>{app.parcel_data.year_built}</strong></span>}
+            {app.parcel_data.sqft && <span>Home: <strong style={{color:C.text}}>{Number(app.parcel_data.sqft).toLocaleString()} sqft</strong></span>}
+          </div>
+        </div>
+      )}
+
+      <div style={{ display:"flex", justifyContent:"flex-end" }}>
+        <Btn onClick={onNext} disabled={!app.address||!app.owner_name}>
+          Next: Permit Type →
+        </Btn>
+      </div>
+    </div>
+  );
+}
+
+// ── Step 1: Permit type + sub-type ────────────────────────────────────────────
+function StepPermitType({ app, onUpdate, onNext, onBack }) {
+  const cat = PERMIT_CATEGORIES.find(c => c.id === app.permit_category);
+
+  return (
+    <div className="fadeUp">
+      <h2 style={{ fontSize:20, fontWeight:700, color:C.navy, marginBottom:6 }}>What type of permit do you need?</h2>
+      <p style={{ fontSize:13, color:C.muted, marginBottom:"1.5rem" }}>
+        Select the category that best describes your project. Each type has tailored requirements for {app.city_display || "your city"}.
+      </p>
+
+      {/* Category grid */}
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(180px,1fr))", gap:10, marginBottom:"1.5rem" }}>
+        {PERMIT_CATEGORIES.map(c => (
+          <button key={c.id} onClick={()=>onUpdate({permit_category:c.id, permit_sub_type:"", permit_display:""})}
+            style={{
+              padding:"1rem", borderRadius:8, textAlign:"left", cursor:"pointer",
+              border: app.permit_category===c.id ? `2px solid ${C.navy}` : `1.5px solid ${C.border}`,
+              background: app.permit_category===c.id ? C.light : "#fff",
+              transition:"all 0.15s",
+            }}>
+            <div style={{ fontSize:24, marginBottom:6 }}>{c.icon}</div>
+            <div style={{ fontSize:13, fontWeight:600, color:C.navy, marginBottom:3 }}>{c.label}</div>
+            <div style={{ fontSize:11, color:C.muted, lineHeight:1.4 }}>{c.desc}</div>
+          </button>
+        ))}
+      </div>
+
+      {/* Sub-type dropdown */}
+      {cat && (
+        <div style={{ marginBottom:"1.5rem" }}>
+          <label style={{ fontSize:11, fontWeight:600, color:C.muted, textTransform:"uppercase", letterSpacing:"0.05em", display:"block", marginBottom:5 }}>
+            Specific type of {cat.label}
+          </label>
+          <select value={app.permit_sub_type||""} onChange={e=>{
+            const sub = cat.subTypes.find(s=>s.id===e.target.value);
+            onUpdate({ permit_sub_type:e.target.value, permit_display: sub ? `${cat.label} — ${sub.label}` : "" });
+          }}>
+            <option value="">Select specific type…</option>
+            {cat.subTypes.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
+          </select>
+        </div>
+      )}
+
+      {app.permit_display && (
+        <div style={{ background:C.light, border:`1px solid ${C.sky}33`, borderRadius:8, padding:"0.75rem 1rem", marginBottom:"1.5rem", fontSize:13, color:C.navy, fontWeight:500 }}>
+          ✓ Selected: {app.permit_display}
+        </div>
+      )}
+
+      <div style={{ display:"flex", justifyContent:"space-between" }}>
+        <Btn variant="secondary" onClick={onBack}>← Back</Btn>
+        <Btn onClick={onNext} disabled={!app.permit_category||!app.permit_sub_type}>
+          Next: Prerequisites →
+        </Btn>
+      </div>
+    </div>
+  );
+}
+
+// ── Step 2: Prerequisites ─────────────────────────────────────────────────────
+function StepPrerequisites({ app, onUpdate, onNext, onBack }) {
+  const [loading, setLoading] = useState(!app.prerequisites?.length);
+  const [chatOpen, setChatOpen] = useState(null);
+  const [chatMsg, setChatMsg]   = useState("");
+  const [chatReply, setChatReply] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
+
+  useEffect(() => {
+    if (app.prerequisites?.length) { setLoading(false); return; }
+    loadPrerequisites();
   }, []);
 
-  useEffect(function() {
-    if (step === 0 && inputRef.current) inputRef.current.focus();
-  }, [step]);
-
-  function reset() {
-    setStep(0); setLocation(""); setAcreage(""); setOptions(null);
-    setSelIdx(null); setPermits(null); setError(""); setReportData(null);
-    setRepStatus(null); setPropInfo(null);
-  }
-
-  function submitLocation() {
-    if (!location.trim()) { setError("Please enter a location."); return; }
-    setError(""); setLoading(true);
-
-    // Check cache first - free
-    var optCk = cacheKey("opts", location, acreage);
-    var propCk = cacheKey("prop", location, acreage);
-    var cachedOpts = cacheGet(optCk);
-    var cachedProp = cacheGet(propCk);
-    if (cachedOpts) {
-      setOptions(cachedOpts);
-      if (cachedProp) setPropInfo(cachedProp);
-      setStep(1); setLoading(false);
-      // Still fetch prop in background if missing
-      if (!cachedProp) fetchPropertyData(location, acreage).then(function(d){ if(d){setPropInfo(d);} });
-      return;
-    }
-
-    // Step 1: fetch live property data from Zillow/LoopNet/Redfin via web search
-    fetchPropertyData(location, acreage).then(function(propData) {
-      if (propData) setPropInfo(propData);
-
-      // Step 2: generate options - pass property context so prompt is shorter
-      var ctx = propData ? ("Zoning:" + (propData.zoning||"unknown") + " Market:" + (propData.marketContext||"").slice(0,80)) : "";
-      var optSys = "CRE expert. Return ONLY JSON array of 3 objects: [{title,summary,tags}]. summary=2 sentences. tags=3 strings. No markdown.";
-      var msg = location + (acreage?", "+acreage+" acres":"") + ". " + ctx + ". Top 3 highest-value development options?";
-      var tries = 0;
-      function attempt() {
-        callAI([{role:"user",content:msg}], optSys, 700).then(function(raw) {
-          try {
-            var d = tryJSON(raw);
-            if (!Array.isArray(d)) throw new Error("not array");
-            cacheSet(optCk, d);
-            setOptions(d); setStep(1); setLoading(false);
-          } catch(e) {
-            tries++;
-            if (tries < 3) { delay(1200).then(attempt); } else { setError("Could not load options: " + e.message); setLoading(false); }
-          }
-        }).catch(function(e) {
-          tries++;
-          if (tries < 3) { delay(1200).then(attempt); } else { setError("API error: " + e.message); setLoading(false); }
-        });
-      }
-      attempt();
+  async function loadPrerequisites() {
+    setLoading(true);
+    const result = await callClaude({
+      max_tokens: 1200,
+      tools: [{ type: "web_search_20250305", name: "web_search" }],
+      system: `You are a permit specialist. Return ONLY a JSON array of prerequisites for this permit application:
+[{"id":"string","category":"string","text":"string","description":"string","required":true/false,"code_ref":"string or null","plain_english":"1 sentence plain English summary"}]
+Include 6-10 items covering zoning, eligibility, environmental, setbacks, etc. No markdown.`,
+      messages: [{ role:"user", content:`Prerequisites for: ${app.permit_display} in ${app.city_display}\nProperty address: ${app.address}\nZoning: ${app.parcel_data?.zoning || "unknown"}` }]
     });
-  }
-
-  function selectOption(idx) {
-    setSelIdx(idx); setPermits(null); setLoading(true); setStep(2);
-    var chosen = options[idx];
-    var ck = cacheKey("road", location, chosen.title);
-    var cached = cacheGet(ck);
-    if (cached) { setPermits(cached); setLoading(false); return; }
-    var sys = "Land use attorney. Return ONLY JSON, no markdown. Schema:{overview:string,permits:string[],timeline:string[],risks:string[],effort:string,totalEstimate:string}";
-    callAI([{role:"user",content:location+(acreage?", "+acreage+" acres":"")+". "+chosen.title+". Permit roadmap."}], sys, 800).then(function(raw) {
-      try { var d=tryJSON(raw); cacheSet(ck,d); setPermits(d); } catch(e) { setError("Parse error: "+e.message); }
-      setLoading(false);
-    }).catch(function(e) { setError(e.message); setLoading(false); });
-  }
-
-  function generateReport() {
-    setGenRep(true); setError(""); setRepStatus(null);
-    var warnings = [];
-    var locStr = location + (acreage ? ", " + acreage + " acres" : "");
-
-    // Check if whole report is cached
-    var repCk = cacheKey("report", location, acreage, (options||[]).map(function(o){return o.title;}).join(","));
-    var cachedRep = cacheGet(repCk);
-    if (cachedRep) { setReportData(cachedRep); setGenRep(false); return; }
-
-    // Fetch live comparables from LoopNet/Zillow for each option type (runs in parallel, cached)
-    var compPromises = options.map(function(opt) { return fetchComparables(location, opt.title); });
-
-    Promise.all(compPromises).then(function(comps) {
-      var valSys = "CRE analyst. Return ONLY JSON: {estimatedValue:integer,estimatedCost:integer,netValue:integer,roi:integer,valuationBasis:string,implOverview:string}. Plain integers, no $ signs.";
-      var valuations = [];
-      var valIdx = 0;
-
-      function nextVal() {
-        if (valIdx >= options.length) { doPermits(); return; }
-        var i = valIdx; valIdx++;
-        var opt = options[i];
-        var ck = cacheKey("val", location, opt.title, acreage);
-        var cached = cacheGet(ck);
-        if (cached) { valuations[i] = cached; delay(0).then(nextVal); return; }
-        var comp = comps[i];
-        // Feed real market data into prompt - dramatically reduces hallucination and token waste
-        var mktCtx = comp ? ("Live market data: avg $"+comp.avgPricePerSqft+"/sqft, cap rate "+comp.avgCapRate+"%, land ~$"+comp.medianLandValue+"/sqft, "+comp.activeListings+" active listings. Source:"+comp.dataSource+".") : "";
-        var msg = locStr + ". " + opt.title + ": " + opt.summary + ". " + mktCtx + " Estimate value, cost, net, ROI, basis, 2-sentence overview.";
-        callAI([{role:"user",content:msg}], valSys, 500).then(function(raw) {
-        try {
-          var v = tryJSON(raw);
-          var vobj = {
-            index: i,
-            estimatedValue: Math.abs(Number(v.estimatedValue)||Number(v.value)||0),
-            estimatedCost: Math.abs(Number(v.estimatedCost)||Number(v.cost)||0),
-            netValue: Math.abs(Number(v.netValue)||Number(v.net)||0),
-            roi: Math.abs(Number(v.roi)||Number(v.ROI)||0),
-            valuationBasis: v.valuationBasis||v.basis||"",
-            implOverview: v.implOverview||v.overview||""
-          };
-          if (!vobj.netValue && vobj.estimatedValue && vobj.estimatedCost) vobj.netValue = vobj.estimatedValue - vobj.estimatedCost;
-          if (!vobj.roi && vobj.estimatedCost) vobj.roi = Math.round(vobj.netValue/vobj.estimatedCost*100);
-          cacheSet(cacheKey("val",location,opt.title,acreage), vobj);
-          valuations[i] = vobj;
-        } catch(e) {
-          warnings.push("Valuation unavailable for " + opt.title);
-          valuations[i] = { index:i, estimatedValue:0, estimatedCost:0, netValue:0, roi:0, valuationBasis:"", implOverview:"" };
-        }
-        delay(300).then(nextVal);
-        }).catch(function(e) {
-          warnings.push("Valuation failed for " + opt.title + ": " + e.message);
-          valuations[i] = { index:i, estimatedValue:0, estimatedCost:0, netValue:0, roi:0, valuationBasis:"", implOverview:"" };
-          delay(300).then(nextVal);
-        });
+    if (result.ok) {
+      const text = extractText(result.data);
+      try {
+        const clean = text.replace(/```json|```/g,"").trim();
+        const s = clean.indexOf("["); const e = clean.lastIndexOf("]");
+        const items = JSON.parse(clean.slice(s, e+1));
+        onUpdate({ prerequisites: items.map(i=>({...i, checked:false, notes:""})) });
+      } catch {
+        onUpdate({ prerequisites: getDefaultPrereqs(app.permit_category) });
       }
-
-      function doPermits() {
-      var pSys = "CRE permit specialist. Return ONLY JSON: {permits:[{name,type,costLow,costHigh,timelineDays,notes}],totalCostLow,totalCostHigh,costNote}. type=Zoning|Environmental|Building|State License|Utility|Other. Plain integers, no $ signs.";
-      var details = new Array(options.length).fill(null);
-      var pIdx = 0;
-      function nextPermit() {
-        if (pIdx >= options.length) {
-          var ranked = valuations
-            .map(function(v) { return Object.assign({}, v, { opt: options[v.index], permitData: details[v.index] || null }); })
-            .sort(function(a,b) { return b.netValue - a.netValue; });
-          cacheSet(repCk, ranked);
-          if (warnings.length) setRepStatus(warnings);
-          setReportData(ranked);
-          setGenRep(false);
-          return;
-        }
-        var i = pIdx; pIdx++;
-        var opt = options[i];
-        var pCk = cacheKey("perm", location, opt.title, acreage);
-        var pCached = cacheGet(pCk);
-        if (pCached) { details[i] = pCached; delay(0).then(nextPermit); return; }
-        callAI([{role:"user",content:locStr+". "+opt.title+". List 5-8 permits with costs and timelines."}], pSys, 800).then(function(pr) {
-          try {
-            var pd = tryJSON(pr);
-            pd.totalCostLow = Math.abs(Number(pd.totalCostLow) || Number(pd.totalLow) || 0);
-            pd.totalCostHigh = Math.abs(Number(pd.totalCostHigh) || Number(pd.totalHigh) || 0);
-            pd.permits = (pd.permits || []).map(function(p) {
-              return Object.assign({}, p, { costLow: Math.abs(Number(p.costLow)||0), costHigh: Math.abs(Number(p.costHigh)||0) });
-            });
-            cacheSet(cacheKey("perm",location,opt.title,acreage), pd);
-            details[i] = pd;
-          } catch(e) { details[i] = getDefaultPermits(opt.title); warnings.push("Using standard permit template for " + opt.title); }
-          delay(400).then(nextPermit);
-        }).catch(function(e) { details[i] = getDefaultPermits(opt.title); delay(400).then(nextPermit); });
-      }
-      nextPermit();
+    } else {
+      onUpdate({ prerequisites: getDefaultPrereqs(app.permit_category) });
     }
-
-      nextVal();
-    }).catch(function(e) { setError("Report failed: " + e.message); setGenRep(false); });
+    setLoading(false);
   }
 
-  var effortCol = {Low:"#4A7C59",Moderate:"#8B7355",High:"#B85C2A","Very High":"#8B1A1A"};
-
-  if (reportData) {
-    return React.createElement(ReportView, {ranked:reportData,location:location,acreage:acreage,onBack:function(){setReportData(null);},warnings:repStatus});
+  async function askQuestion(prereqId) {
+    if (!chatMsg.trim()) return;
+    setChatLoading(true);
+    const prereq = app.prerequisites.find(p=>p.id===prereqId);
+    const result = await callClaude({
+      max_tokens: 400,
+      system: "You are a permit specialist. Answer the applicant's question about this prerequisite in 2-3 sentences. Be specific and practical.",
+      messages: [{ role:"user", content:`Prerequisite: ${prereq.text}\nCity: ${app.city_display}\nPermit: ${app.permit_display}\nQuestion: ${chatMsg}` }]
+    });
+    if (result.ok) setChatReply(extractText(result.data));
+    setChatLoading(false);
   }
 
-  return React.createElement("div", { style:{minHeight:"100vh",background:CREAM,fontFamily:TXT} },
-    React.createElement("link", {rel:"stylesheet",href:"https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600;700&family=Crimson+Text:ital,wght@0,400;0,600;1,400&family=DM+Mono:wght@400;500&display=swap"}),
+  function toggleCheck(id) {
+    const updated = app.prerequisites.map(p => p.id===id ? {...p, checked:!p.checked} : p);
+    onUpdate({ prerequisites: updated });
+  }
 
-    React.createElement("div", {style:{borderBottom:"1px solid #D4C4A8",background:"rgba(253,250,245,0.95)",position:"sticky",top:0,zIndex:10}},
-      React.createElement("div", {style:{maxWidth:760,margin:"0 auto",padding:"16px 24px",display:"flex",alignItems:"center",justifyContent:"space-between"}},
-        React.createElement("span", {style:{fontFamily:SERIF,fontSize:15,fontWeight:600,color:DARK}}, "Land Use Evaluator"),
-        React.createElement("div", {style:{display:"flex",alignItems:"center",gap:8}},
-          ["Location","Options","Roadmap"].map(function(lbl,i){
-            return React.createElement("div", {key:i,style:{display:"flex",alignItems:"center",gap:6}},
-              React.createElement("div", {style:{display:"flex",alignItems:"center",gap:4,opacity:i>step?0.35:1}},
-                React.createElement("div", {style:{width:20,height:20,borderRadius:"50%",background:i<step?BROWN:i===step?TAN:"#E8DCC8",display:"flex",alignItems:"center",justifyContent:"center",fontFamily:MONO,fontSize:9,color:i<step?"#fff":BROWN}}, i<step?"v":i+1),
-                React.createElement("span", {style:{fontFamily:MONO,fontSize:9,textTransform:"uppercase",color:i===step?DARK:"#8B7355"}}, lbl)
-              ),
-              i<2 && React.createElement("div", {style:{width:12,height:1,background:"#D4C4A8"}})
-            );
-          })
-        )
-      )
-    ),
+  const allRequired = app.prerequisites?.filter(p=>p.required) || [];
+  const allChecked = allRequired.every(p=>p.checked);
 
-    React.createElement("div", {style:{maxWidth:720,margin:"0 auto",padding:"48px 24px 80px"}},
+  return (
+    <div className="fadeUp">
+      <h2 style={{ fontSize:20, fontWeight:700, color:C.navy, marginBottom:6 }}>Project prerequisites</h2>
+      <p style={{ fontSize:13, color:C.muted, marginBottom:"1.5rem" }}>
+        Verify each item before preparing your application. Check off as you confirm them.
+      </p>
 
-      step===0 && React.createElement("div", {className:"fu"},
-        React.createElement("div", {style:{marginBottom:48}},
-          React.createElement("div", {style:{fontFamily:MONO,fontSize:10,textTransform:"uppercase",color:"#8B7355",marginBottom:12,letterSpacing:"0.15em"}}, "Step 1 of 3"),
-          React.createElement("h1", {style:{fontFamily:SERIF,fontSize:36,fontWeight:700,color:DARK,margin:0,lineHeight:1.2}}, "Where is your parcel?"),
-          React.createElement("p", {style:{color:"#6B5A3E",fontSize:17,marginTop:12,lineHeight:1.6}}, "Enter an address, city, or region with approximate acreage to identify the top 3 development opportunities.")
-        ),
-        React.createElement("div", {style:{display:"flex",flexDirection:"column",gap:16}},
-          React.createElement("div", null,
-            React.createElement("label", {style:{fontFamily:MONO,fontSize:10,textTransform:"uppercase",color:"#8B7355",display:"block",marginBottom:8}}, "Location"),
-            React.createElement("input", {ref:inputRef,value:location,onChange:function(e){setLocation(e.target.value);},onKeyDown:function(e){if(e.key==="Enter")submitLocation();},placeholder:"e.g. Scottsdale AZ or 700 Bennet St Cedar Hill TX",style:{width:"100%",boxSizing:"border-box",padding:"14px 18px",fontSize:16,fontFamily:TXT,border:"1.5px solid #D4C4A8",borderRadius:2,background:"#FDFAF5",color:DARK}})
-          ),
-          React.createElement("div", null,
-            React.createElement("label", {style:{fontFamily:MONO,fontSize:10,textTransform:"uppercase",color:"#8B7355",display:"block",marginBottom:8}}, "Acreage (optional)"),
-            React.createElement("input", {value:acreage,onChange:function(e){setAcreage(e.target.value);},onKeyDown:function(e){if(e.key==="Enter")submitLocation();},placeholder:"e.g. 12.5",style:{width:180,padding:"14px 18px",fontSize:16,fontFamily:TXT,border:"1.5px solid #D4C4A8",borderRadius:2,background:"#FDFAF5",color:DARK}})
-          ),
-          error && React.createElement("div", {style:{color:"#8B1A1A",fontFamily:MONO,fontSize:12}}, error),
-          React.createElement("div", {style:{marginTop:8}},
-            loading ? React.createElement(Spin, null) :
-            React.createElement("button", {onClick:submitLocation,style:{background:BROWN,color:CREAM,border:"none",padding:"14px 36px",fontFamily:MONO,fontSize:12,textTransform:"uppercase",cursor:"pointer",borderRadius:2}}, "Evaluate Location")
-          )
-        )
-      ),
+      {loading ? (
+        <div style={{ textAlign:"center", padding:"3rem", color:C.muted }}>
+          <Spinner size={24} />
+          <p style={{ marginTop:12, fontSize:13 }}>Loading prerequisites for {app.permit_display}…</p>
+        </div>
+      ) : (
+        <>
+          <div style={{ display:"flex", flexDirection:"column", gap:10, marginBottom:"1.5rem" }}>
+            {(app.prerequisites||[]).map(p => (
+              <div key={p.id} style={{ background:"#fff", border:`1.5px solid ${p.checked ? C.green : C.border}`, borderRadius:8, padding:"1rem", transition:"border-color 0.15s" }}>
+                <div style={{ display:"flex", gap:12, alignItems:"flex-start" }}>
+                  <input type="checkbox" checked={p.checked||false} onChange={()=>toggleCheck(p.id)}
+                    style={{ width:18, height:18, marginTop:2, flexShrink:0, accentColor:C.navy, cursor:"pointer" }} />
+                  <div style={{ flex:1 }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:8, flexWrap:"wrap" }}>
+                      <span style={{ fontSize:14, fontWeight:600, color:C.text }}>{p.text}</span>
+                      <div style={{ display:"flex", gap:6, flexShrink:0 }}>
+                        {p.code_ref && <span style={{ fontSize:10, padding:"2px 8px", borderRadius:4, background:"#EBF5FB", color:C.sky, fontWeight:600 }}>§ Code</span>}
+                        <span style={{ fontSize:10, padding:"2px 8px", borderRadius:4, background: p.required?"#FDEDEC":"#EAFAF1", color: p.required?C.red:C.green, fontWeight:600 }}>{p.required?"Required":"If applicable"}</span>
+                      </div>
+                    </div>
+                    {p.description && <p style={{ fontSize:12, color:C.muted, marginTop:4, lineHeight:1.5 }}>{p.description}</p>}
+                    {p.plain_english && <p style={{ fontSize:12, color:C.sky, marginTop:4, fontStyle:"italic" }}>💡 {p.plain_english}</p>}
+                    
+                    {/* Q&A toggle */}
+                    <button onClick={()=>{ setChatOpen(chatOpen===p.id?null:p.id); setChatMsg(""); setChatReply(""); }}
+                      style={{ fontSize:11, color:C.sky, background:"none", border:"none", cursor:"pointer", marginTop:6, padding:0, fontWeight:600 }}>
+                      {chatOpen===p.id ? "▲ Hide Q&A" : "▼ Ask a question about this"}
+                    </button>
 
-      step>=1 && options && React.createElement("div", {className:"fu"},
-        React.createElement("div", {style:{marginBottom:20}},
-          React.createElement("div", {style:{fontFamily:MONO,fontSize:10,textTransform:"uppercase",color:"#8B7355",marginBottom:8}}, "Step 2 of 3 - "+location+(acreage?" - "+acreage+" acres":"")),
-          React.createElement("h2", {style:{fontFamily:SERIF,fontSize:28,fontWeight:700,color:DARK,margin:0}}, "Property Overview")
-        ),
+                    {chatOpen===p.id && (
+                      <div style={{ marginTop:10, background:C.gray, borderRadius:6, padding:"0.75rem" }}>
+                        <div style={{ display:"flex", gap:8 }}>
+                          <input value={chatMsg} onChange={e=>setChatMsg(e.target.value)} onKeyDown={e=>e.key==="Enter"&&askQuestion(p.id)}
+                            placeholder="Ask about this requirement…" style={{ flex:1, fontSize:12, padding:"7px 10px" }} />
+                          <Btn size="sm" onClick={()=>askQuestion(p.id)} loading={chatLoading} disabled={!chatMsg.trim()}>Ask</Btn>
+                        </div>
+                        {chatReply && <p style={{ fontSize:12, color:C.text, marginTop:8, lineHeight:1.6 }}>{chatReply}</p>}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
 
-        propInfo && React.createElement("div", {style:{marginBottom:28,border:"1.5px solid #D4C4A8",borderRadius:3,overflow:"hidden"}},
-          React.createElement("div", {style:{background:BROWN,padding:"14px 22px",display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:12}},
-            React.createElement("div", null,
-              React.createElement("div", {style:{fontFamily:MONO,fontSize:9,textTransform:"uppercase",color:TAN,marginBottom:4}}, "Opportunity Score"),
-              React.createElement("div", {style:{display:"flex",alignItems:"baseline",gap:6}},
-                React.createElement("span", {style:{fontFamily:SERIF,fontSize:36,fontWeight:700,color:CREAM,lineHeight:1}}, propInfo.opportunityScore),
-                React.createElement("span", {style:{fontFamily:MONO,fontSize:12,color:TAN}}, "/10")
-              ),
-              React.createElement("div", {style:{fontFamily:TXT,fontSize:13,color:"#D4C4A8",marginTop:4}}, propInfo.opportunityRationale)
-            ),
-            React.createElement("div", {style:{textAlign:"right"}},
-              React.createElement("div", {style:{fontFamily:MONO,fontSize:11,color:TAN}}, propInfo.jurisdiction),
-              acreage && React.createElement("div", {style:{fontFamily:MONO,fontSize:11,color:TAN}}, propInfo.landArea||acreage+" acres"),
-              React.createElement("div", {style:{fontFamily:MONO,fontSize:11,color:TAN}}, propInfo.zoning)
-            )
-          ),
-          React.createElement("div", {style:{display:"grid",gridTemplateColumns:"1fr 1fr",borderBottom:"1px solid #E8DCC8"}},
-            [{l:"Market Context",v:propInfo.marketContext},{l:"Demographics",v:propInfo.demographics}].map(function(x,i){
-              return React.createElement("div", {key:i,style:{padding:"14px 18px",borderRight:i===0?"1px solid #E8DCC8":"none",background:"#FDFAF5"}},
-                React.createElement("div", {style:{fontFamily:MONO,fontSize:9,textTransform:"uppercase",color:"#8B7355",marginBottom:5}}, x.l),
-                React.createElement("div", {style:{fontFamily:TXT,fontSize:14,color:"#3D2E18",lineHeight:1.6}}, x.v)
-              );
-            })
-          ),
-          React.createElement("div", {style:{display:"grid",gridTemplateColumns:"1fr 1fr"}},
-            [{l:"Infrastructure",v:propInfo.infrastructure},{l:"Constraints",v:propInfo.constraints}].map(function(x,i){
-              return React.createElement("div", {key:i,style:{padding:"14px 18px",borderRight:i===0?"1px solid #E8DCC8":"none",background:"#F7F2E8"}},
-                React.createElement("div", {style:{fontFamily:MONO,fontSize:9,textTransform:"uppercase",color:"#8B7355",marginBottom:5}}, x.l),
-                React.createElement("div", {style:{fontFamily:TXT,fontSize:14,color:"#3D2E18",lineHeight:1.6}}, x.v)
-              );
-            })
-          )
-        ),
+          {!allChecked && (
+            <div style={{ background:"#FEF9E7", border:`1px solid ${C.orange}33`, borderRadius:6, padding:"0.75rem 1rem", fontSize:12, color:C.orange, marginBottom:"1rem" }}>
+              ⚠️ Please check off all required prerequisites before proceeding.
+            </div>
+          )}
+        </>
+      )}
 
-        React.createElement("h3", {style:{fontFamily:SERIF,fontSize:22,fontWeight:700,color:DARK,margin:"0 0 8px 0"}}, "Top 3 Development Options"),
-        React.createElement("p", {style:{color:"#6B5A3E",fontSize:15,margin:"0 0 20px 0"}}, "Click a card to generate a permit roadmap."),
+      <div style={{ display:"flex", justifyContent:"space-between" }}>
+        <Btn variant="secondary" onClick={onBack}>← Back</Btn>
+        <Btn onClick={onNext} disabled={loading || !allChecked}>
+          Next: Documents →
+        </Btn>
+      </div>
+    </div>
+  );
+}
 
-        React.createElement("div", {style:{display:"flex",flexDirection:"column",gap:14,marginBottom:20}},
-          options.map(function(opt,i){ return React.createElement(OptionCard,{key:i,opt:opt,index:i,onSelect:selectOption,selected:selIdx,location:location,acreage:acreage}); })
-        ),
+// ── Step 3: Documents ─────────────────────────────────────────────────────────
+function StepDocuments({ app, onUpdate, onNext, onBack, userId }) {
+  const [loading, setLoading] = useState(!app.documents?.length);
+  const [uploading, setUploading] = useState(null);
 
-        loading && step===2 && React.createElement(Spin, null),
+  useEffect(() => {
+    if (app.documents?.length) { setLoading(false); return; }
+    loadDocuments();
+  }, []);
 
-        React.createElement("div", {style:{display:"flex",alignItems:"center",gap:12,paddingTop:16,borderTop:"1px solid #E8DCC8",marginBottom:16,flexWrap:"wrap"}},
-          genRep ? React.createElement(Spin, {s:true,label:"Building report..."}) :
-          React.createElement("button", {onClick:generateReport,style:{background:"#4A7C59",color:CREAM,border:"none",padding:"13px 22px",fontFamily:MONO,fontSize:11,textTransform:"uppercase",cursor:"pointer",borderRadius:2}}, "Generate Full Report (All 3 Options)"),
-          error && React.createElement("div", {style:{color:"#8B1A1A",fontFamily:MONO,fontSize:11}}, error)
-        ),
-        React.createElement("button", {onClick:reset,style:{background:"none",border:"none",color:"#8B7355",fontFamily:MONO,fontSize:11,textTransform:"uppercase",cursor:"pointer",padding:0,textDecoration:"underline"}}, "Start Over")
-      ),
+  async function loadDocuments() {
+    setLoading(true);
+    const result = await callClaude({
+      max_tokens: 1000,
+      tools: [{ type: "web_search_20250305", name: "web_search" }],
+      system: `You are a permit specialist. Return ONLY a JSON array of required documents:
+[{"id":"string","name":"string","description":"string","required":true/false,"notes":"string"}]
+Include 5-10 documents specific to this permit type. No markdown.`,
+      messages: [{ role:"user", content:`Required documents for: ${app.permit_display} in ${app.city_display}` }]
+    });
+    if (result.ok) {
+      const text = extractText(result.data);
+      try {
+        const clean = text.replace(/```json|```/g,"").trim();
+        const s = clean.indexOf("["); const e = clean.lastIndexOf("]");
+        const items = JSON.parse(clean.slice(s, e+1));
+        onUpdate({ documents: items.map(i=>({...i, checked:false, storage_path:null, file_name:null})) });
+      } catch {
+        onUpdate({ documents: getDefaultDocuments(app.permit_category) });
+      }
+    } else {
+      onUpdate({ documents: getDefaultDocuments(app.permit_category) });
+    }
+    setLoading(false);
+  }
 
-      step===2 && permits && !loading && React.createElement("div", {className:"fu",style:{marginTop:40,borderTop:"1px solid #D4C4A8",paddingTop:40}},
-        React.createElement("div", {style:{marginBottom:22}},
-          React.createElement("div", {style:{fontFamily:MONO,fontSize:10,textTransform:"uppercase",color:"#8B7355",marginBottom:8}}, "Step 3 of 3 - Permit Roadmap"),
-          React.createElement("h2", {style:{fontFamily:SERIF,fontSize:28,fontWeight:700,color:DARK,margin:0}}, options[selIdx].title),
-          React.createElement("p", {style:{color:"#6B5A3E",fontSize:16,marginTop:10,lineHeight:1.6}}, permits.overview)
-        ),
-        React.createElement("div", {style:{display:"flex",marginBottom:24,border:"1.5px solid #D4C4A8",borderRadius:2,overflow:"hidden"}},
-          React.createElement("div", {style:{flex:1,padding:"14px 18px",background:"#F0E8D8",borderRight:"1px solid #D4C4A8"}},
-            React.createElement(SecLabel, null, "Total Timeline"),
-            React.createElement("div", {style:{fontFamily:SERIF,fontSize:15,color:DARK,fontWeight:600}}, permits.totalEstimate)
-          ),
-          React.createElement("div", {style:{padding:"14px 20px",background:"#F0E8D8"}},
-            React.createElement(SecLabel, null, "Effort"),
-            React.createElement("div", {style:{fontFamily:SERIF,fontSize:15,fontWeight:700,color:effortCol[permits.effort]||BROWN}}, permits.effort)
-          )
-        ),
-        React.createElement(BulletList, {title:"Required Permits & Approvals",items:permits.permits,color:BROWN}),
-        React.createElement(BulletList, {title:"Development Timeline",items:permits.timeline,color:"#4A7C59"}),
-        React.createElement(BulletList, {title:"Key Risks & Challenges",items:permits.risks,color:"#B85C2A"}),
-        React.createElement("div", {style:{padding:"14px 18px",background:"#EDE4D6",borderRadius:2,fontFamily:MONO,fontSize:10,color:"#8B7355",lineHeight:1.6}}, "Informational only. Permit requirements vary by jurisdiction. Consult a licensed land use attorney."),
-        error && React.createElement("div", {style:{marginTop:10,color:"#8B1A1A",fontFamily:MONO,fontSize:12}}, error),
-        React.createElement("div", {style:{marginTop:22,display:"flex",gap:12,flexWrap:"wrap",alignItems:"center"}},
-          React.createElement("button", {onClick:function(){setStep(1);setSelIdx(null);setPermits(null);},style:{background:BROWN,color:CREAM,border:"none",padding:"12px 22px",fontFamily:MONO,fontSize:11,textTransform:"uppercase",cursor:"pointer",borderRadius:2}}, "Compare Other Options"),
-          React.createElement("button", {onClick:reset,style:{background:"none",border:"1.5px solid #D4C4A8",color:BROWN,padding:"12px 22px",fontFamily:MONO,fontSize:11,textTransform:"uppercase",cursor:"pointer",borderRadius:2}}, "New Evaluation"),
-          React.createElement("div", {style:{width:1,height:20,background:"#D4C4A8"}}),
-          genRep ? React.createElement(Spin,{s:true,label:"Building report..."}) :
-          React.createElement("button", {onClick:generateReport,style:{background:"#4A7C59",color:CREAM,border:"none",padding:"12px 22px",fontFamily:MONO,fontSize:11,textTransform:"uppercase",cursor:"pointer",borderRadius:2}}, "Generate Full Report")
-        )
-      )
-    )
+  function toggleCheck(id) {
+    const updated = app.documents.map(d => d.id===id ? {...d, checked:!d.checked} : d);
+    onUpdate({ documents: updated });
+  }
+
+  async function handleUpload(docId, file) {
+    setUploading(docId);
+    const path = await dbSaveDocument({ applicationId: app.id, userId, docId, file });
+    if (path) {
+      const updated = app.documents.map(d => d.id===docId ? {...d, checked:true, storage_path:path, file_name:file.name} : d);
+      onUpdate({ documents: updated });
+    }
+    setUploading(null);
+  }
+
+  const required = app.documents?.filter(d=>d.required) || [];
+  const allChecked = required.every(d=>d.checked);
+
+  return (
+    <div className="fadeUp">
+      <h2 style={{ fontSize:20, fontWeight:700, color:C.navy, marginBottom:6 }}>Required documents</h2>
+      <p style={{ fontSize:13, color:C.muted, marginBottom:"1.5rem" }}>
+        Gather and check off each item. Upload files where available.
+      </p>
+
+      {loading ? (
+        <div style={{ textAlign:"center", padding:"3rem", color:C.muted }}>
+          <Spinner size={24} />
+          <p style={{ marginTop:12, fontSize:13 }}>Loading document requirements…</p>
+        </div>
+      ) : (
+        <div style={{ display:"flex", flexDirection:"column", gap:10, marginBottom:"1.5rem" }}>
+          {(app.documents||[]).map(doc => (
+            <div key={doc.id} style={{ background:"#fff", border:`1.5px solid ${doc.checked?C.green:C.border}`, borderRadius:8, padding:"1rem" }}>
+              <div style={{ display:"flex", gap:12, alignItems:"flex-start" }}>
+                <input type="checkbox" checked={doc.checked||false} onChange={()=>toggleCheck(doc.id)}
+                  style={{ width:18, height:18, marginTop:2, flexShrink:0, accentColor:C.navy, cursor:"pointer" }} />
+                <div style={{ flex:1 }}>
+                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:8, flexWrap:"wrap" }}>
+                    <span style={{ fontSize:14, fontWeight:600, color:C.text }}>{doc.name}</span>
+                    <span style={{ fontSize:10, padding:"2px 8px", borderRadius:4, background: doc.required?"#FDEDEC":"#EAFAF1", color: doc.required?C.red:C.green, fontWeight:600 }}>
+                      {doc.required?"Required":"Optional"}
+                    </span>
+                  </div>
+                  {doc.description && <p style={{ fontSize:12, color:C.muted, marginTop:4, lineHeight:1.5 }}>{doc.description}</p>}
+                  {doc.notes && <p style={{ fontSize:11, color:C.sky, marginTop:4 }}>ℹ️ {doc.notes}</p>}
+                  
+                  {/* Upload */}
+                  <div style={{ marginTop:8, display:"flex", alignItems:"center", gap:8 }}>
+                    {doc.file_name ? (
+                      <span style={{ fontSize:11, color:C.green }}>✓ {doc.file_name}</span>
+                    ) : (
+                      <label style={{ fontSize:11, color:C.sky, cursor:"pointer", display:"flex", alignItems:"center", gap:4, fontWeight:600 }}>
+                        {uploading===doc.id ? <><Spinner size={12}/> Uploading…</> : "📎 Upload file"}
+                        <input type="file" style={{ display:"none" }} onChange={e=>e.target.files[0]&&handleUpload(doc.id,e.target.files[0])} />
+                      </label>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ display:"flex", justifyContent:"space-between" }}>
+        <Btn variant="secondary" onClick={onBack}>← Back</Btn>
+        <Btn onClick={onNext} disabled={loading||!allChecked}>
+          Next: Application →
+        </Btn>
+      </div>
+    </div>
+  );
+}
+
+// ── Step 4: Application details ───────────────────────────────────────────────
+function StepApplication({ app, onUpdate, onNext, onBack }) {
+  return (
+    <div className="fadeUp">
+      <h2 style={{ fontSize:20, fontWeight:700, color:C.navy, marginBottom:6 }}>Application information</h2>
+      <p style={{ fontSize:13, color:C.muted, marginBottom:"1.5rem" }}>
+        Enter your project details to complete the application.
+      </p>
+
+      <div style={{ display:"flex", flexDirection:"column", gap:14, marginBottom:"1.5rem" }}>
+        <div style={{ borderBottom:`1.5px solid ${C.border}`, paddingBottom:12 }}>
+          <p style={{ fontSize:11, fontWeight:700, color:C.muted, textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:10 }}>Applicant & Contact</p>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+            <div>
+              <label style={{ fontSize:11, fontWeight:600, color:C.muted, display:"block", marginBottom:5 }}>Owner / Applicant Name</label>
+              <input value={app.owner_name||""} onChange={e=>onUpdate({owner_name:e.target.value})} placeholder="Full legal name" />
+            </div>
+            <div>
+              <label style={{ fontSize:11, fontWeight:600, color:C.muted, display:"block", marginBottom:5 }}>Phone</label>
+              <input value={app.phone||""} onChange={e=>onUpdate({phone:e.target.value})} placeholder="(650) 000-0000" />
+            </div>
+            <div style={{ gridColumn:"1/-1" }}>
+              <label style={{ fontSize:11, fontWeight:600, color:C.muted, display:"block", marginBottom:5 }}>Email</label>
+              <input type="email" value={app.email||""} onChange={e=>onUpdate({email:e.target.value})} placeholder="your@email.com" />
+            </div>
+          </div>
+        </div>
+
+        <div style={{ borderBottom:`1.5px solid ${C.border}`, paddingBottom:12 }}>
+          <p style={{ fontSize:11, fontWeight:700, color:C.muted, textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:10 }}>Property Information</p>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+            <div style={{ gridColumn:"1/-1" }}>
+              <label style={{ fontSize:11, fontWeight:600, color:C.muted, display:"block", marginBottom:5 }}>Property Address</label>
+              <input value={app.address||""} onChange={e=>onUpdate({address:e.target.value})} placeholder="123 Main Street, Woodside, CA 94062" />
+            </div>
+            <div>
+              <label style={{ fontSize:11, fontWeight:600, color:C.muted, display:"block", marginBottom:5 }}>APN</label>
+              <input value={app.apn||""} onChange={e=>onUpdate({apn:e.target.value})} placeholder="000-000-000" />
+            </div>
+            <div>
+              <label style={{ fontSize:11, fontWeight:600, color:C.muted, display:"block", marginBottom:5 }}>Lot Size (sq ft)</label>
+              <input type="number" value={app.parcel_data?.lot_size_sqft||""} onChange={e=>onUpdate({parcel_data:{...app.parcel_data,lot_size_sqft:e.target.value}})} placeholder="e.g. 43560" />
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <p style={{ fontSize:11, fontWeight:700, color:C.muted, textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:10 }}>Project Scope</p>
+          <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+            <div>
+              <label style={{ fontSize:11, fontWeight:600, color:C.muted, display:"block", marginBottom:5 }}>Project Description *</label>
+              <textarea value={app.project_description||""} onChange={e=>onUpdate({project_description:e.target.value})}
+                placeholder="Describe the full scope of work — include square footage, number of stories, materials, and any demolition…"
+                style={{ minHeight:100, resize:"vertical" }} />
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+              <div>
+                <label style={{ fontSize:11, fontWeight:600, color:C.muted, display:"block", marginBottom:5 }}>Estimated Project Value ($)</label>
+                <input type="number" value={app.estimated_value||""} onChange={e=>onUpdate({estimated_value:e.target.value})} placeholder="e.g. 250000" />
+              </div>
+              <div>
+                <label style={{ fontSize:11, fontWeight:600, color:C.muted, display:"block", marginBottom:5 }}>Licensed Contractor (if known)</label>
+                <input value={app.contractor||""} onChange={e=>onUpdate({contractor:e.target.value})} placeholder="Company name + CA license #" />
+              </div>
+              <div style={{ gridColumn:"1/-1" }}>
+                <label style={{ fontSize:11, fontWeight:600, color:C.muted, display:"block", marginBottom:5 }}>Architect / Engineer (if applicable)</label>
+                <input value={app.architect||""} onChange={e=>onUpdate({architect:e.target.value})} placeholder="Name + CA license #" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display:"flex", justifyContent:"space-between" }}>
+        <Btn variant="secondary" onClick={onBack}>← Back</Btn>
+        <Btn onClick={onNext} disabled={!app.project_description}>
+          Next: Review & Submit →
+        </Btn>
+      </div>
+    </div>
+  );
+}
+
+// ── Step 5: Review & Submit ───────────────────────────────────────────────────
+function StepSubmit({ app, onSubmit, onBack, submitting, submitted }) {
+  if (submitted) {
+    return (
+      <div className="fadeUp" style={{ textAlign:"center", padding:"2rem 0" }}>
+        <div style={{ fontSize:48, marginBottom:"1rem" }}>🎉</div>
+        <h2 style={{ fontSize:22, fontWeight:700, color:C.green, marginBottom:8 }}>Application Submitted!</h2>
+        <p style={{ fontSize:14, color:C.muted, marginBottom:"1.5rem" }}>Your permit application has been submitted successfully.</p>
+        <div style={{ background:C.light, border:`1px solid ${C.sky}33`, borderRadius:8, padding:"1.5rem", display:"inline-block", marginBottom:"1.5rem" }}>
+          <p style={{ fontSize:11, color:C.muted, marginBottom:4 }}>Tracking Number</p>
+          <p style={{ fontSize:28, fontWeight:700, color:C.navy, letterSpacing:"0.1em" }}>{app.tracking_number}</p>
+        </div>
+        <p style={{ fontSize:13, color:C.muted }}>Save this number to track your application status.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="fadeUp">
+      <h2 style={{ fontSize:20, fontWeight:700, color:C.navy, marginBottom:6 }}>Review & Submit</h2>
+      <p style={{ fontSize:13, color:C.muted, marginBottom:"1.5rem" }}>Review your application before submitting.</p>
+
+      <div style={{ display:"flex", flexDirection:"column", gap:12, marginBottom:"1.5rem" }}>
+        {[
+          { label:"Property", items:[
+            ["Address", app.address],
+            ["APN", app.apn],
+            ["Owner", app.owner_name],
+            ["City", app.city_display],
+          ]},
+          { label:"Permit", items:[
+            ["Type", app.permit_display],
+          ]},
+          { label:"Project", items:[
+            ["Description", app.project_description],
+            ["Est. Value", app.estimated_value ? `$${Number(app.estimated_value).toLocaleString()}` : null],
+            ["Contractor", app.contractor],
+          ]},
+          { label:"Documents", items:[
+            ["Checked", `${app.documents?.filter(d=>d.checked).length||0} of ${app.documents?.length||0}`],
+            ["Uploaded", `${app.documents?.filter(d=>d.file_name).length||0} files`],
+          ]},
+        ].map(section => (
+          <div key={section.label} style={{ background:"#fff", border:`1.5px solid ${C.border}`, borderRadius:8, overflow:"hidden" }}>
+            <div style={{ background:C.gray, padding:"8px 14px", fontSize:11, fontWeight:700, color:C.muted, textTransform:"uppercase", letterSpacing:"0.06em" }}>{section.label}</div>
+            <div style={{ padding:"10px 14px" }}>
+              {section.items.filter(([,v])=>v).map(([k,v]) => (
+                <div key={k} style={{ display:"flex", gap:12, fontSize:13, marginBottom:6 }}>
+                  <span style={{ color:C.muted, minWidth:100 }}>{k}</span>
+                  <span style={{ color:C.text, flex:1 }}>{v}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ background:"#FEF9E7", border:`1px solid ${C.orange}33`, borderRadius:6, padding:"0.75rem 1rem", fontSize:12, color:"#856404", marginBottom:"1.5rem" }}>
+        ℹ️ This is an educational tool. Verify all requirements directly with your city's planning department before submitting official applications.
+      </div>
+
+      <div style={{ display:"flex", justifyContent:"space-between" }}>
+        <Btn variant="secondary" onClick={onBack}>← Back</Btn>
+        <Btn onClick={onSubmit} loading={submitting}>
+          Submit Application ✓
+        </Btn>
+      </div>
+    </div>
+  );
+}
+
+// ── Default data fallbacks ────────────────────────────────────────────────────
+function getDefaultPrereqs(category) {
+  return [
+    { id:"p1", category:"Zoning", text:"Confirm zoning classification", description:"Verify your parcel's zoning allows this type of project.", required:true, plain_english:"Check your zoning allows this use.", checked:false },
+    { id:"p2", category:"Eligibility", text:"Confirm lot eligibility", description:"Verify lot size, coverage, and setback requirements.", required:true, plain_english:"Make sure your lot meets size requirements.", checked:false },
+    { id:"p3", category:"Environmental", text:"Determine if CEQA review applies", description:"Most small residential projects qualify for categorical exemptions.", required:true, plain_english:"Check if an environmental review is needed.", checked:false },
+    { id:"p4", category:"Utilities", text:"Confirm utility service availability", description:"Water, sewer, gas, and electrical connections must be available.", required:true, plain_english:"Make sure utilities can serve the new space.", checked:false },
+  ];
+}
+
+function getDefaultDocuments(category) {
+  return [
+    { id:"d1", name:"Completed Building Permit Application", description:"Download from city website.", required:true, checked:false, storage_path:null, file_name:null },
+    { id:"d2", name:"Site Plan", description:"Show property lines, setbacks, and proposed improvements.", required:true, checked:false, storage_path:null, file_name:null },
+    { id:"d3", name:"Floor Plans and Elevations", description:"Show square footage, room layout, and ceiling heights.", required:true, checked:false, storage_path:null, file_name:null },
+    { id:"d4", name:"Structural Calculations", description:"Stamped by a licensed CA structural engineer.", required:true, checked:false, storage_path:null, file_name:null },
+    { id:"d5", name:"Title 24 Energy Compliance", description:"Required for all new construction.", required:true, checked:false, storage_path:null, file_name:null },
+  ];
+}
+
+// ── Main App ──────────────────────────────────────────────────────────────────
+export default function App() {
+  const [user,       setUser]       = useState(null);
+  const [authReady,  setAuthReady]  = useState(false);
+  const [step,       setStep]       = useState(0);
+  const [completed,  setCompleted]  = useState([]);
+  const [app,        setApp]        = useState({});
+  const [saving,     setSaving]     = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitted,  setSubmitted]  = useState(false);
+  const [myApps,     setMyApps]     = useState([]);
+  const [showList,   setShowList]   = useState(false);
+
+  // Check session on load
+  useEffect(() => {
+    const u = getUser();
+    setUser(u);
+    setAuthReady(true);
+    if (u) loadMyApps(u.id);
+  }, []);
+
+  async function loadMyApps(userId) {
+    const apps = await dbLoadApplications(userId);
+    setMyApps(apps || []);
+  }
+
+  function updateApp(updates) {
+    setApp(prev => ({ ...prev, ...updates }));
+  }
+
+  async function saveProgress(updates = {}) {
+    if (!user) return;
+    setSaving(true);
+    const merged = { ...app, ...updates, current_step: step, user_id: user.id };
+    const saved = await dbSaveApplication(merged);
+    if (saved?.id) updateApp({ id: saved.id });
+    setSaving(false);
+  }
+
+  async function goNext() {
+    setCompleted(prev => [...new Set([...prev, step])]);
+    await saveProgress({ current_step: step + 1 });
+    setStep(s => s + 1);
+    window.scrollTo(0, 0);
+  }
+
+  function goBack() {
+    setStep(s => s - 1);
+    window.scrollTo(0, 0);
+  }
+
+  async function handleSubmit() {
+    setSubmitting(true);
+    const tracking = generateTracking();
+    const final = { ...app, status:"submitted", tracking_number:tracking, submitted_at:new Date().toISOString() };
+    await dbSaveApplication({ ...final, user_id:user.id });
+    updateApp({ tracking_number:tracking, status:"submitted" });
+    setSubmitted(true);
+    setSubmitting(false);
+  }
+
+  function generateTracking() {
+    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    const rand = n => Array.from({length:n}, ()=>chars[Math.floor(Math.random()*chars.length)]).join("");
+    return `${rand(3)}-${rand(4)}`;
+  }
+
+  async function handleAuth() {
+    const u = getUser();
+    setUser(u);
+    if (u) loadMyApps(u.id);
+  }
+
+  async function handleSignOut() {
+    await signOut();
+    setUser(null);
+    setApp({});
+    setStep(0);
+    setCompleted([]);
+    setSubmitted(false);
+  }
+
+  function resumeApp(savedApp) {
+    setApp(savedApp);
+    setStep(savedApp.current_step || 0);
+    const done = [];
+    for (let i = 0; i < (savedApp.current_step||0); i++) done.push(i);
+    setCompleted(done);
+    setShowList(false);
+  }
+
+  // ── Not logged in ───────────────────────────────────────────────────────────
+  if (!authReady) return null;
+  if (!user) return <AuthModal onAuth={handleAuth} allowGuest={false} />;
+
+  // ── My Applications list ────────────────────────────────────────────────────
+  if (showList) {
+    return (
+      <div style={{ minHeight:"100vh", background:C.gray }}>
+        <style>{css}</style>
+        <Header user={user} onSignOut={handleSignOut} saving={saving} onMyApps={()=>setShowList(false)} onNew={()=>{setApp({});setStep(0);setCompleted([]);setSubmitted(false);setShowList(false);}} showBack />
+        <div style={{ maxWidth:700, margin:"2rem auto", padding:"0 1rem" }}>
+          <h2 style={{ fontSize:20, fontWeight:700, color:C.navy, marginBottom:"1.5rem" }}>My Applications</h2>
+          {myApps.length === 0 ? (
+            <div style={{ background:"#fff", borderRadius:10, padding:"3rem", textAlign:"center", color:C.muted, fontSize:14 }}>
+              No applications yet. Start a new one!
+            </div>
+          ) : (
+            <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+              {myApps.map(a => (
+                <div key={a.id} style={{ background:"#fff", border:`1.5px solid ${C.border}`, borderRadius:8, padding:"1rem 1.25rem", display:"flex", justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:10 }}>
+                  <div>
+                    <p style={{ fontWeight:600, fontSize:14, color:C.navy }}>{a.address||"No address"}</p>
+                    <p style={{ fontSize:12, color:C.muted, marginTop:3 }}>{a.permit_display||"No permit type"} · {a.city_display||""}</p>
+                    {a.tracking_number && <p style={{ fontSize:11, color:C.green, marginTop:3 }}>✓ {a.tracking_number}</p>}
+                  </div>
+                  <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+                    <span style={{ fontSize:11, padding:"3px 10px", borderRadius:20, background:a.status==="submitted"?"#EAFAF1":"#EBF5FB", color:a.status==="submitted"?C.green:C.sky, fontWeight:600 }}>{a.status}</span>
+                    {a.status !== "submitted" && <Btn size="sm" onClick={()=>resumeApp(a)}>Resume →</Btn>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ── Main wizard ─────────────────────────────────────────────────────────────
+  return (
+    <div style={{ minHeight:"100vh", background:C.gray }}>
+      <style>{css}</style>
+      <Header user={user} onSignOut={handleSignOut} saving={saving} onMyApps={()=>{loadMyApps(user.id);setShowList(true);}} onNew={()=>{setApp({});setStep(0);setCompleted([]);setSubmitted(false);}} />
+
+      {/* Step bar */}
+      <div style={{ background:C.navy, padding:"1rem 0" }}>
+        <div style={{ maxWidth:860, margin:"0 auto" }}>
+          <StepBar current={step} completed={completed} />
+        </div>
+      </div>
+
+      {/* Content */}
+      <div style={{ maxWidth:760, margin:"2rem auto", padding:"0 1rem" }}>
+        <div style={{ background:"#fff", borderRadius:12, padding:"2rem", boxShadow:"0 2px 12px rgba(0,0,0,0.06)" }}>
+          {step===0 && <StepProperty app={app} onUpdate={updateApp} onNext={goNext} />}
+          {step===1 && <StepPermitType app={app} onUpdate={updateApp} onNext={goNext} onBack={goBack} />}
+          {step===2 && <StepPrerequisites app={app} onUpdate={updateApp} onNext={goNext} onBack={goBack} />}
+          {step===3 && <StepDocuments app={app} onUpdate={updateApp} onNext={goNext} onBack={goBack} userId={user?.id} />}
+          {step===4 && <StepApplication app={app} onUpdate={updateApp} onNext={goNext} onBack={goBack} />}
+          {step===5 && <StepSubmit app={app} onSubmit={handleSubmit} onBack={goBack} submitting={submitting} submitted={submitted} />}
+        </div>
+      </div>
+
+      <footer style={{ textAlign:"center", padding:"2rem 1rem", fontSize:11, color:C.muted, lineHeight:1.6 }}>
+        This is an educational guide. Verify all requirements directly with your city's planning department.<br/>
+        Not legal advice.
+      </footer>
+    </div>
+  );
+}
+
+function Header({ user, onSignOut, saving, onMyApps, onNew, showBack }) {
+  return (
+    <div style={{ background:C.navy, borderBottom:`1px solid ${C.blue}`, padding:"1rem 1.5rem", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+      <div>
+        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+          <span style={{ fontSize:20 }}>🏛️</span>
+          <div>
+            <span style={{ fontSize:18, fontWeight:700, color:"#fff" }}>Permit Assistant</span>
+            <span style={{ fontSize:11, color:"#8EACC9", display:"block", marginTop:-2 }}>Step-by-step permit guidance</span>
+          </div>
+        </div>
+      </div>
+      <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+        {saving && <span style={{ fontSize:11, color:"#8EACC9", display:"flex", alignItems:"center", gap:4 }}><Spinner size={12} color="#8EACC9"/>Saving…</span>}
+        <Btn size="sm" variant="ghost" onClick={onMyApps} style={{ color:"#8EACC9" }}>My Applications</Btn>
+        <Btn size="sm" variant="ghost" onClick={onNew} style={{ color:"#8EACC9" }}>+ New</Btn>
+        <span style={{ fontSize:12, color:"#8EACC9" }}>{user?.email}</span>
+        <Btn size="sm" variant="secondary" onClick={onSignOut} style={{ fontSize:11 }}>Sign out</Btn>
+      </div>
+    </div>
   );
 }
