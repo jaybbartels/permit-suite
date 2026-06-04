@@ -1,7 +1,4 @@
 // ── Supabase direct browser calls — app_data schema ──────────────────────────
-// Uses authenticated user token from Supabase Auth session
-// RLS policies enforce that users can only see their own data
-
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_KEY;
 const SCHEMA = "app_data";
@@ -9,7 +6,15 @@ const SCHEMA = "app_data";
 function getAuthHeaders() {
   try {
     const session = JSON.parse(localStorage.getItem("hvp_session") || "{}");
-    const token = session?.access_token || SUPABASE_KEY;
+    const token = session?.access_token;
+    if (!token) {
+      console.warn('[DB] No access token found — using anon key');
+      return {
+        'apikey': SUPABASE_KEY,
+        'Authorization': `Bearer ${SUPABASE_KEY}`,
+        'Accept-Profile': SCHEMA,
+      };
+    }
     return {
       'apikey': SUPABASE_KEY,
       'Authorization': `Bearer ${token}`,
@@ -24,18 +29,16 @@ function getAuthHeaders() {
   }
 }
 
-// Save or update a permit application
 export async function dbSaveApplication(appData) {
   const headers = getAuthHeaders();
   const { id, ...data } = appData;
-
-  // Clean up undefined values
   const clean = Object.fromEntries(Object.entries(data).filter(([,v]) => v !== undefined));
   clean.updated_at = new Date().toISOString();
 
+  console.log('[DB] Saving application, user_id:', clean.user_id, 'id:', id || 'new');
+
   try {
     if (id) {
-      // Update existing
       const res = await fetch(
         `${SUPABASE_URL}/rest/v1/permit_applications?id=eq.${id}`,
         {
@@ -48,7 +51,6 @@ export async function dbSaveApplication(appData) {
       const rows = await res.json();
       return rows[0] ?? null;
     } else {
-      // Insert new
       const res = await fetch(
         `${SUPABASE_URL}/rest/v1/permit_applications`,
         {
@@ -68,7 +70,6 @@ export async function dbSaveApplication(appData) {
   }
 }
 
-// Load all applications for a user
 export async function dbLoadApplications(userId) {
   const headers = getAuthHeaders();
   try {
@@ -76,15 +77,11 @@ export async function dbLoadApplications(userId) {
       `${SUPABASE_URL}/rest/v1/permit_applications?user_id=eq.${userId}&order=updated_at.desc`,
       { headers }
     );
-    if (!res.ok) return [];
+    if (!res.ok) { console.error('[DB] Load apps error:', await res.text()); return []; }
     return await res.json();
-  } catch (e) {
-    console.error('[DB] Load apps error:', e.message);
-    return [];
-  }
+  } catch (e) { console.error('[DB] Load apps error:', e.message); return []; }
 }
 
-// Load a single application by ID
 export async function dbLoadApplication(id) {
   const headers = getAuthHeaders();
   try {
@@ -95,21 +92,15 @@ export async function dbLoadApplication(id) {
     if (!res.ok) return null;
     const rows = await res.json();
     return rows[0] ?? null;
-  } catch (e) {
-    console.error('[DB] Load app error:', e.message);
-    return null;
-  }
+  } catch (e) { console.error('[DB] Load app error:', e.message); return null; }
 }
 
-// Upload a document to Supabase Storage and record metadata
 export async function dbSaveDocument({ applicationId, userId, docId, file }) {
   const session = JSON.parse(localStorage.getItem("hvp_session") || "{}");
   const token = session?.access_token || SUPABASE_KEY;
-
   const path = `${userId}/${applicationId}/${docId}-${file.name}`;
 
   try {
-    // Upload to Supabase Storage
     const uploadRes = await fetch(
       `${SUPABASE_URL}/storage/v1/object/permit-documents/${path}`,
       {
@@ -121,15 +112,10 @@ export async function dbSaveDocument({ applicationId, userId, docId, file }) {
         body: file,
       }
     );
-    if (!uploadRes.ok) {
-      const e = await uploadRes.text();
-      console.error('[DB] Storage upload error:', e);
-      return null;
-    }
+    if (!uploadRes.ok) { console.error('[DB] Storage upload error:', await uploadRes.text()); return null; }
 
-    // Record document metadata
     const headers = getAuthHeaders();
-    const metaRes = await fetch(
+    await fetch(
       `${SUPABASE_URL}/rest/v1/permit_documents`,
       {
         method: 'POST',
@@ -146,12 +132,7 @@ export async function dbSaveDocument({ applicationId, userId, docId, file }) {
         }),
       }
     );
-    if (!metaRes.ok) console.error('[DB] Document metadata error:', await metaRes.text());
-
     console.log('[DB] Document uploaded:', path);
     return path;
-  } catch (e) {
-    console.error('[DB] Document upload error:', e.message);
-    return null;
-  }
+  } catch (e) { console.error('[DB] Document upload error:', e.message); return null; }
 }
