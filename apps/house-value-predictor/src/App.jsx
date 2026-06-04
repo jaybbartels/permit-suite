@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import { getUser, signIn, signUp, signOut } from "./auth.js";
-import { dbGetProperty, dbUpsertProperty } from "./db.js";
+import { dbGetProperty, dbUpsertProperty, dbGetPermits, dbUpsertPermits } from "./db.js";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, ReferenceLine
@@ -1060,21 +1060,51 @@ export default function App() {
       .then(o => { setOpps(o); setOppsLoading(false); })
       .catch(() => { setOpps([]); setOppsLoading(false); });
 
-    // Permits fetch runs in parallel — if it succeeds, refine opportunities with actual history
+    // Permits — check cache first, then live fetch
     setPermitsLoading(true);
-    fetchPermits(address).then(({noAccount, permits: p}) => {
-      setPermits(p || []);
-      setPermitsLoading(false);
-      if (noAccount) setPermitsError("noapi");
-      // Refine opportunities now that we have real permit history
-      if (p && p.length > 0) {
-        fetchPermitOpportunities(address, p, cityKey)
+    dbGetPermits(address).then(cached => {
+      if (cached && cached.length > 0) {
+        // Cache hit — use stored permits
+        console.log('[DB] Using cached permits for:', address);
+        setPermits(cached);
+        setPermitsLoading(false);
+        fetchPermitOpportunities(address, cached, cityKey)
           .then(o => setOpps(o))
           .catch(() => {});
+      } else {
+        // Cache miss — live fetch
+        fetchPermits(address).then(({noAccount, permits: p}) => {
+          setPermits(p || []);
+          setPermitsLoading(false);
+          if (noAccount) setPermitsError("noapi");
+          // Write to cache if we got results
+          if (p && p.length > 0) {
+            dbUpsertPermits({ address, permits: p, fetchedBy: user?.email || 'anonymous' });
+            fetchPermitOpportunities(address, p, cityKey)
+              .then(o => setOpps(o))
+              .catch(() => {});
+          }
+        }).catch(() => {
+          setPermitsError("error");
+          setPermitsLoading(false);
+        });
       }
     }).catch(() => {
-      setPermitsError("error");
-      setPermitsLoading(false);
+      // DB error — fall through to live fetch
+      fetchPermits(address).then(({noAccount, permits: p}) => {
+        setPermits(p || []);
+        setPermitsLoading(false);
+        if (noAccount) setPermitsError("noapi");
+        if (p && p.length > 0) {
+          dbUpsertPermits({ address, permits: p, fetchedBy: user?.email || 'anonymous' });
+          fetchPermitOpportunities(address, p, cityKey)
+            .then(o => setOpps(o))
+            .catch(() => {});
+        }
+      }).catch(() => {
+        setPermitsError("error");
+        setPermitsLoading(false);
+      });
     });
   },[canSubmit,address,cityKey]);
 
