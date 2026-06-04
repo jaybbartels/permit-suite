@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { getUser, signIn, signUp, signOut } from "./auth.js";
 
 var API_URL = "/api/claude";
