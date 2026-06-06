@@ -27,6 +27,7 @@ Shared API layer is additive/optional — apps work without it.
 5. Added .gitignore for .DS_Store
 6. Built POST /api/price/lookup
 7. Built POST /api/permit/opportunities
+8. Built POST /api/price/projection — all 20 Case-Shiller metros + geocoding
 
 ## API endpoints built
 POST /api/price/lookup
@@ -38,11 +39,22 @@ POST /api/permit/opportunities
   body:    { address }
   returns: { permits, opportunities, permitsSource, permitsFetchedAt }
   errors:  400 (no address), 500
-  notes:   checks Supabase cache first (30-day TTL)
-           fetches live via Anthropic web search if stale/missing
+  notes:   Supabase cache first (30-day TTL), live fetch if stale
            writes back to cache automatically
-           runs opportunity catalogue filter against existing permits
-           city-aware: San Francisco, Miami, National fallback
+
+POST /api/price/projection
+  body:    { address, purchasePrice, purchaseMonth }
+           purchaseMonth format: "Jan-2015"
+  returns: { metro, fredCode, color, projection[] }
+           projection: [{ month, value, index, isForecast, isExtrapolated }]
+  errors:  400 (missing/invalid params), 500
+  notes:   geocodes address via Nominatim (free, no key)
+           ZIP prefix fast-path before geocoding
+           75-mile proximity radius to nearest Case-Shiller metro
+           falls back to National (CSUSHPISA) if no metro match
+           all 20 metros: SF, LA, SD, NY, Boston, DC, Miami, Tampa,
+           Chicago, Minneapolis, Cleveland, Detroit, Atlanta, Charlotte,
+           Dallas, Denver, Phoenix, Las Vegas, Portland, Seattle
 
 ## Canonical api/ structure
 api/
@@ -51,6 +63,7 @@ api/
   claude.js           — Claude API proxy
   price/
     lookup.js         — POST /api/price/lookup
+    projection.js     — POST /api/price/projection
   permit/
     opportunities.js  — POST /api/permit/opportunities
 
@@ -61,20 +74,18 @@ property_lookups  — address_key, address_display, last_sale_price,
 property_permits  — address_key, permits (jsonb), fetched_at, fetched_by
 
 ## Code categories
-PURE / API-ready:
-  buildProjection() — still in house-value-predictor/src/App.jsx (not yet extracted)
-
 BROWSER-ONLY (stays client-side):
   localStorage in src/auth.js, AuthModal component, Supabase db.js direct calls
 
 ## Next steps (in order)
-1. Define 2-endpoint boundary between private sector and gov portal
+1. Wire house-value-predictor App.jsx to call:
+   - POST /api/price/lookup    instead of client-side lookupLastSale()
+   - POST /api/price/projection instead of client-side buildProjection()
+   - POST /api/permit/opportunities instead of client-side fetchPermits()
+2. Define 2-endpoint boundary between private sector and gov portal
    - POST /api/permit/submit  — private → gov (new permit submission)
    - GET  /api/permit/status  — gov → private (status updates)
-2. Wire house-value-predictor to call /api/price/lookup instead of client-side
-3. Wire house-value-predictor to call /api/permit/opportunities instead of client-side
-4. Decide owner portal boundary (private sector vs gov side)
-5. Extract buildProjection() to api/price/projection.js
+3. Decide owner portal boundary (private sector vs gov side)
 
 ## How to resume
 Paste this entire file at the start of a new Claude conversation and say:
