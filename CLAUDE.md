@@ -28,6 +28,10 @@ Shared API layer is additive/optional — apps work without it.
 6. Built POST /api/price/lookup
 7. Built POST /api/permit/opportunities
 8. Built POST /api/price/projection — all 20 Case-Shiller metros + geocoding
+9. Wired house-value-predictor App.jsx to use all 3 API endpoints
+   - handleLookup → POST /api/price/lookup
+   - handleSubmit → POST /api/permit/opportunities
+   - projection   → POST /api/price/projection (useEffect + useState)
 
 ## API endpoints built
 POST /api/price/lookup
@@ -48,13 +52,9 @@ POST /api/price/projection
   returns: { metro, fredCode, color, projection[] }
            projection: [{ month, value, index, isForecast, isExtrapolated }]
   errors:  400 (missing/invalid params), 500
-  notes:   geocodes address via Nominatim (free, no key)
-           ZIP prefix fast-path before geocoding
+  notes:   geocodes via Nominatim, ZIP prefix fast-path
            75-mile proximity radius to nearest Case-Shiller metro
-           falls back to National (CSUSHPISA) if no metro match
-           all 20 metros: SF, LA, SD, NY, Boston, DC, Miami, Tampa,
-           Chicago, Minneapolis, Cleveland, Detroit, Atlanta, Charlotte,
-           Dallas, Denver, Phoenix, Las Vegas, Portland, Seattle
+           all 20 metros supported, National fallback
 
 ## Canonical api/ structure
 api/
@@ -73,19 +73,22 @@ property_lookups  — address_key, address_display, last_sale_price,
                     looked_up_by, looked_up_at
 property_permits  — address_key, permits (jsonb), fetched_at, fetched_by
 
-## Code categories
-BROWSER-ONLY (stays client-side):
-  localStorage in src/auth.js, AuthModal component, Supabase db.js direct calls
+## IN PROGRESS — house-value-predictor App.jsx wiring
+STATUS: All 4 edits applied, NOT YET committed or tested
+NEXT: commit, deploy to Vercel, smoke test with a real address
+The old client-side functions (lookupLastSale, buildProjection,
+fetchPermits, fetchPermitOpportunities) are still in App.jsx
+but no longer called — can be deleted after testing confirms
+the API endpoints work correctly end-to-end.
 
 ## Next steps (in order)
-1. Wire house-value-predictor App.jsx to call:
-   - POST /api/price/lookup    instead of client-side lookupLastSale()
-   - POST /api/price/projection instead of client-side buildProjection()
-   - POST /api/permit/opportunities instead of client-side fetchPermits()
-2. Define 2-endpoint boundary between private sector and gov portal
-   - POST /api/permit/submit  — private → gov (new permit submission)
-   - GET  /api/permit/status  — gov → private (status updates)
-3. Decide owner portal boundary (private sector vs gov side)
+1. Commit App.jsx changes
+2. Deploy to Vercel and smoke test with a real address
+3. Delete now-unused client-side functions from App.jsx
+4. Define 2-endpoint boundary between private sector and gov portal
+   - POST /api/permit/submit  — private → gov
+   - GET  /api/permit/status  — gov → private
+5. Decide owner portal boundary (private sector vs gov side)
 
 ## How to resume
 Paste this entire file at the start of a new Claude conversation and say:

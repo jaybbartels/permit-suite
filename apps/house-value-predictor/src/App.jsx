@@ -987,13 +987,26 @@ export default function App() {
       return;
     }
 
-    // ── Live lookup waterfall ───────────────────────────────────────────────
-    const updateSource = (s) => setLookupSource(s);
-    const { noAccount, data } = await lookupLastSale(address, updateSource);
-    setLookupSource("");
-    if (noAccount) {
-      setLookupState("noapi");
-    } else if (data) {
+    // ── Live lookup via API ────────────────────────────────────────────────
+    setLookupSource("searching…");
+    try {
+      const res = await fetch('/api/price/lookup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ address }),
+      });
+      setLookupSource("");
+      if (res.status === 404) {
+        setLookupState("notfound");
+        setLookupMsg("No sale record found — enter price and date manually.");
+        return;
+      }
+      if (!res.ok) {
+        setLookupState("notfound");
+        setLookupMsg("Lookup failed — enter price and date manually.");
+        return;
+      }
+      const data = await res.json();
       setPriceRaw(Number(data.price).toLocaleString());
       setPurchaseMon(data.month);
       setPurchaseYr(String(data.year));
@@ -1009,9 +1022,10 @@ export default function App() {
         saleSource:    data.source,
         lookedUpBy:    user?.email || "anonymous",
       });
-    } else {
+    } catch {
+      setLookupSource("");
       setLookupState("notfound");
-      setLookupMsg("No sale record found — enter price and date manually.");
+      setLookupMsg("Lookup failed — enter price and date manually.");
     }
   }
 
@@ -1021,10 +1035,18 @@ export default function App() {
   const purchaseStr= purchaseMon+"-"+purchaseYr;
   const canSubmit  = address.trim().length>0 && !isNaN(price) && price>0;
 
-  const projection = useMemo(()=>{
-    if (!submitted||isNaN(price)||price<=0) return null;
-    return buildProjection(price,purchaseStr,cityKey);
-  },[submitted,price,purchaseStr,cityKey]);
+  const [projection, setProjection] = useState(null);
+  useEffect(()=>{
+    if (!submitted||isNaN(price)||price<=0) { setProjection(null); return; }
+    fetch('/api/price/projection', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ address, purchasePrice: price, purchaseMonth: purchaseStr }),
+    })
+      .then(res => res.ok ? res.json() : Promise.reject())
+      .then(({ projection: proj }) => setProjection(proj || null))
+      .catch(() => setProjection(null));
+  },[submitted,price,purchaseStr,address]);
 
   const chartData = useMemo(()=>{
     if (!projection) return [];
@@ -1053,59 +1075,28 @@ export default function App() {
     if(!canSubmit)return;
     setSubmitted(true);setPermits(null);setPermitsError(null);setOpps(null);setOppsLoading(false);setSelectedOpp(null);setDetail(null);setDetailLoading(false);setPermitSubTab("history");setActiveTab("chart");
 
-    // Opportunities are pure local catalogue — run immediately with no permit filter
-    // so the tab is always populated even if permit lookup fails or has no account
+    // ── Permits + opportunities via API (handles cache internally) ────────
     setOppsLoading(true);
-    fetchPermitOpportunities(address, [], cityKey)
-      .then(o => { setOpps(o); setOppsLoading(false); })
-      .catch(() => { setOpps([]); setOppsLoading(false); });
-
-    // Permits — check cache first, then live fetch
     setPermitsLoading(true);
-    dbGetPermits(address).then(cached => {
-      if (cached && cached.length > 0) {
-        // Cache hit — use stored permits
-        console.log('[DB] Using cached permits for:', address);
-        setPermits(cached);
-        setPermitsLoading(false);
-        fetchPermitOpportunities(address, cached, cityKey)
-          .then(o => setOpps(o))
-          .catch(() => {});
-      } else {
-        // Cache miss — live fetch
-        fetchPermits(address).then(({noAccount, permits: p}) => {
-          setPermits(p || []);
-          setPermitsLoading(false);
-          if (noAccount) setPermitsError("noapi");
-          // Write to cache if we got results
-          if (p && p.length > 0) {
-            dbUpsertPermits({ address, permits: p, fetchedBy: user?.email || 'anonymous' });
-            fetchPermitOpportunities(address, p, cityKey)
-              .then(o => setOpps(o))
-              .catch(() => {});
-          }
-        }).catch(() => {
-          setPermitsError("error");
-          setPermitsLoading(false);
-        });
-      }
-    }).catch(() => {
-      // DB error — fall through to live fetch
-      fetchPermits(address).then(({noAccount, permits: p}) => {
+    fetch('/api/permit/opportunities', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ address }),
+    })
+      .then(res => res.ok ? res.json() : Promise.reject(res.status))
+      .then(({ permits: p, opportunities: o }) => {
         setPermits(p || []);
+        setOpps(o || []);
         setPermitsLoading(false);
-        if (noAccount) setPermitsError("noapi");
-        if (p && p.length > 0) {
-          dbUpsertPermits({ address, permits: p, fetchedBy: user?.email || 'anonymous' });
-          fetchPermitOpportunities(address, p, cityKey)
-            .then(o => setOpps(o))
-            .catch(() => {});
-        }
-      }).catch(() => {
+        setOppsLoading(false);
+      })
+      .catch(() => {
         setPermitsError("error");
+        setPermits([]);
+        setOpps([]);
         setPermitsLoading(false);
+        setOppsLoading(false);
       });
-    });
   },[canSubmit,address,cityKey]);
 
   function tabLabel(t){if(t==="permits"){if(permitsLoading)return"Permits…";if(permits&&permits.length>0)return`Permits (${permits.length})`;}if(t==="valuation")return"Valuation";return t.charAt(0).toUpperCase()+t.slice(1);}
