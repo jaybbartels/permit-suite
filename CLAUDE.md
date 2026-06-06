@@ -19,44 +19,62 @@ Shared API layer is additive/optional — apps work without it.
 - Supabase: shared users for private sector; gov portal gets its own instance
 - Owner portals: boundary decision still pending (private vs gov side)
 
-## What was completed this session
+## Completed
 1. Fixed ESM/CJS mismatch — all api/auth.js handlers now use export default
 2. Centralized api/claude.js — deleted 4 per-app duplicates, root is canonical
 3. Government portal kept its own api/claude.js for isolation
 4. Added vite proxy (/api → localhost:3000) to 4 private sector apps
 5. Added .gitignore for .DS_Store
-6. Built POST /api/price/lookup — first shared cross-app endpoint
+6. Built POST /api/price/lookup
+7. Built POST /api/permit/opportunities
 
 ## API endpoints built
 POST /api/price/lookup
-  body: { address: "123 Main St, City, ST 12345" }
+  body:    { address }
   returns: { price, month, year, source }
-  errors: 400 (no address), 404 (not found), 500 (server error)
-  notes: runs full Zillow → Redfin → Realtor → AI waterfall server-side
+  errors:  400 (no address), 404 (not found), 500
+
+POST /api/permit/opportunities
+  body:    { address }
+  returns: { permits, opportunities, permitsSource, permitsFetchedAt }
+  errors:  400 (no address), 500
+  notes:   checks Supabase cache first (30-day TTL)
+           fetches live via Anthropic web search if stale/missing
+           writes back to cache automatically
+           runs opportunity catalogue filter against existing permits
+           city-aware: San Francisco, Miami, National fallback
 
 ## Canonical api/ structure
 api/
-  anthropic.js   — Anthropic API proxy (all private sector apps)
-  auth.js        — Supabase auth proxy (all private sector apps)
-  claude.js      — Claude API proxy (all private sector apps)
+  anthropic.js        — Anthropic API proxy
+  auth.js             — Supabase auth proxy
+  claude.js           — Claude API proxy
   price/
-    lookup.js    — POST /api/price/lookup
+    lookup.js         — POST /api/price/lookup
+  permit/
+    opportunities.js  — POST /api/permit/opportunities
+
+## Supabase schema (app_data)
+property_lookups  — address_key, address_display, last_sale_price,
+                    last_sale_month, last_sale_year, sale_source,
+                    looked_up_by, looked_up_at
+property_permits  — address_key, permits (jsonb), fetched_at, fetched_by
 
 ## Code categories
 PURE / API-ready:
-  buildProjection(), fetchPermitOpportunities(), CATALOGUE data,
-  parseZillowPage/Redfin/Realtor parsers (now in api/price/lookup.js)
+  buildProjection() — still in house-value-predictor/src/App.jsx (not yet extracted)
 
 BROWSER-ONLY (stays client-side):
   localStorage in src/auth.js, AuthModal component, Supabase db.js direct calls
 
 ## Next steps (in order)
-1. Build POST /api/permit/opportunities — shared permit opportunities endpoint
-2. Define 2-endpoint boundary between private sector and gov portal
-   - POST /api/permit/submit  — private → gov
-   - GET  /api/permit/status  — gov → private
-3. Wire house-value-predictor to call /api/price/lookup instead of client-side
+1. Define 2-endpoint boundary between private sector and gov portal
+   - POST /api/permit/submit  — private → gov (new permit submission)
+   - GET  /api/permit/status  — gov → private (status updates)
+2. Wire house-value-predictor to call /api/price/lookup instead of client-side
+3. Wire house-value-predictor to call /api/permit/opportunities instead of client-side
 4. Decide owner portal boundary (private sector vs gov side)
+5. Extract buildProjection() to api/price/projection.js
 
 ## How to resume
 Paste this entire file at the start of a new Claude conversation and say:
