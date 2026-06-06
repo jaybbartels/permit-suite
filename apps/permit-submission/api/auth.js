@@ -1,4 +1,4 @@
-module.exports = async function handler(req, res) {
+export default async function handler(req, res) {
   if (req.method === 'OPTIONS') {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'POST');
@@ -13,9 +13,9 @@ module.exports = async function handler(req, res) {
   const { action, email, password } = req.body;
 
   const endpoints = {
-    signup:  `${SUPABASE_URL}/auth/v1/signup`,
-    login:   `${SUPABASE_URL}/auth/v1/token?grant_type=password`,
-    logout:  `${SUPABASE_URL}/auth/v1/logout`,
+    signup: `${SUPABASE_URL}/auth/v1/signup`,
+    login:  `${SUPABASE_URL}/auth/v1/token?grant_type=password`,
+    logout: `${SUPABASE_URL}/auth/v1/logout`,
   };
 
   const url = endpoints[action];
