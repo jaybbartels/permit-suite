@@ -36,7 +36,7 @@ export async function refreshSession() {
     const res = await fetch(`${API_URL}/api/auth`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'login', refresh_token: s.refresh_token }),
+      body: JSON.stringify({ action: 'refresh', refresh_token: s.refresh_token }),
     });
     if (!res.ok) return false;
     const data = await res.json();
