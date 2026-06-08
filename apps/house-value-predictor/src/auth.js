@@ -84,3 +84,10 @@ export async function signOut() {
   }
   saveSession(null);
 }
+
+export async function authHeadersAsync() {
+  const token = await getValidToken();
+  return token
+    ? { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }
+    : { 'Content-Type': 'application/json' };
+}
