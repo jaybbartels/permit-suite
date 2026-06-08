@@ -220,7 +220,8 @@ const REFORM_STATES = new Set(Object.keys(STATE_LAWS));
 
 // ── Extract state code from address ──────────────────────────────────────────
 function extractState(address) {
-  const m = address.match(/,\s*([A-Z]{2})\s*(\d{5})?$/);
+  // Handle formats: "CA 94062", "CA. 94062", "CA", "California"
+  const m = address.match(/,?\s*([A-Z]{2})\.?\s*(\d{5})?[,\s]*$/);
   if (m) return m[1];
   // Full state name fallback
   const STATE_NAMES = {
