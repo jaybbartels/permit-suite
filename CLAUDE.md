@@ -107,3 +107,27 @@ Apps:   vercel apps/[app-name] --prod --scope domusai
 ## How to resume
 Paste this entire file at the start of a new Claude conversation and say:
 "Resume permit suite development — here is our CLAUDE.md context"
+
+## Complete Supabase schema (app_data) — all tables
+api_usage           — rate limiting (user_id, endpoint, date, count)
+permit_applications — submitted permits (shared between submit + gov portal)
+permit_documents    — uploaded files (storage: permit-documents bucket)
+permit_comments     — gov worker notes on applications
+ai_reviews          — AI pre-screening results
+user_profiles       — role + city assignment (gov vs owner)
+jurisdiction_codes  — code/zoning lookup cache by state/county/city
+parcel_data         — per-property zoning, permit history, hazard zones
+
+## jurisdiction_codes seeded entries
+- state / CA / building_code — CBC 2025, free access via ICC/UpCodes
+- county / CA / San Mateo County / zoning_api — ArcGIS free endpoint
+- city / CA / San Mateo County / Woodside / municipal_code — eTRAKiT details
+- city / CA / San Mateo County / Woodside / zoning_reform — SB9 applies
+
+## Next API endpoints to build
+api/jurisdiction/
+  lookup.js     — GET /api/jurisdiction/lookup?state=CA&county=San+Mateo+County&city=Woodside&topic=zoning_api
+  seed.js       — POST /api/jurisdiction/seed (admin only, populates new jurisdictions)
+api/parcel/
+  lookup.js     — POST /api/parcel/lookup { address } → zoning + hazard zones via ArcGIS
+  history.js    — POST /api/parcel/history { address } → permit history via eTRAKiT or AI
