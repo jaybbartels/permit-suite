@@ -131,3 +131,39 @@ api/jurisdiction/
 api/parcel/
   lookup.js     — POST /api/parcel/lookup { address } → zoning + hazard zones via ArcGIS
   history.js    — POST /api/parcel/history { address } → permit history via eTRAKiT or AI
+
+## Jurisdiction database — populated entries (June 8 2026)
+State level (CA):
+  - building_code (CBC 2025, free via ICC/UpCodes)
+  - zoning_reform (SB9 2022)
+  - adu_law (AB 2221 + SB 897 2023)
+
+State level (OR):
+  - building_code (Oregon Residential Specialty Code 2023)
+  - zoning_reform (HB 2001 + SB 458)
+
+County level (San Mateo County, CA):
+  - zoning_api (ArcGIS free endpoint details)
+  - zoning_districts (ArcGIS layer sampled)
+  - parcel_layer (ArcGIS layer sampled)
+
+City level (Woodside, CA):
+  - municipal_code (eTRAKiT details, contact info)
+  - zoning_reform (SB9 applies — AG rejected Woodside exemption)
+  - adu_rules (crawled from woodsideca.gov)
+  - setback_requirements (crawled)
+  - permit_fees (crawled, medium confidence)
+  - fire_hazard_zones (crawled, high confidence)
+
+## To add a new jurisdiction
+1. Add city to CITY_CONFIGS in api/jurisdiction/crawl-city.js
+2. Add county to COUNTY_CONFIGS in api/jurisdiction/crawl-county.js
+3. Call POST /api/jurisdiction/crawl-city and /crawl-county
+4. Data auto-expires in 30 days and can be re-crawled on demand
+
+## Next steps
+1. Build POST /api/parcel/lookup — ArcGIS zoning query per address
+2. Wire lot-potential to use jurisdiction + parcel lookup instead of AI search
+3. Audit + deploy permit-assistant
+4. Add Vercel Cron for monthly jurisdiction refresh
+5. Remove api/debug/lookup.js before public launch
