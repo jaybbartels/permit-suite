@@ -199,3 +199,25 @@ IP is hashed with SHA256 + salt before storage — no raw IPs stored.
 
 TODO: Apply same auth fixes (authHeadersAsync, handle401, handleSignupRequired)
       to cre-evaluator, permit-submission, and lot-potential apps.
+
+## Auth fixes applied to all apps — June 8 2026
+lot-potential and cre-evaluator now have:
+  - Token expiry check in getToken()
+  - refreshSession() with action:'refresh'
+  - getValidToken() auto-refresh
+  - authHeadersAsync() for all API calls
+  - Anonymous usage works in incognito (IP rate limited)
+
+## Current app status
+house-value-predictor  — FULL auth + anon + refresh + 401 handler ✓
+cre-evaluator          — FULL auth + anon + refresh ✓
+lot-potential          — FULL auth + anon + refresh ✓
+permit-submission      — needs auth fixes (next session)
+government-portal      — uses gov_session, no anon needed
+
+## Next session priorities
+1. Apply auth fixes to permit-submission
+2. Build POST /api/parcel/lookup — ArcGIS zoning per address
+3. Wire lot-potential to use jurisdiction + parcel data
+4. Audit + deploy permit-assistant
+5. Build POST /api/permit/submit — private → gov portal
