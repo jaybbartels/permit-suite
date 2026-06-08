@@ -14,13 +14,13 @@ Shared API is a separate Vercel project — apps call it by URL.
 - apps/permit-assistant       — permit process guidance
 - apps/lot-potential          — SB9/state zoning reform eligibility checker
 
-## Deployment targets (to be created)
-- api.domusai.vercel.app          — shared API service (api/ folder)
-- hvp.domusai.vercel.app          — house-value-predictor
-- lot.domusai.vercel.app          — lot-potential
-- permits.domusai.vercel.app      — permit-submission
-- portal.domusai.vercel.app       — government portal (isolated)
-- assistant.domusai.vercel.app    — permit-assistant
+## Deployment targets
+- permit-suite-api (DEPLOYED) — https://vercel.com/domusai/permit-suite-api
+- hvp.domusai.vercel.app          — house-value-predictor (not yet deployed)
+- lot.domusai.vercel.app          — lot-potential (not yet deployed)
+- permits.domusai.vercel.app      — permit-submission (not yet deployed)
+- portal.domusai.vercel.app       — government portal (not yet deployed)
+- assistant.domusai.vercel.app    — permit-assistant (not yet deployed)
 
 ## Architecture decisions confirmed
 - Government portal fully isolatable (potential FedRAMP/self-host)
@@ -47,7 +47,6 @@ Free (post-trial):
   - price/projection: 10/day
   - No PDF reports
   - Saved history: last 3 properties
-
 Pro:
   - All endpoints unlimited
   - PDF reports
@@ -59,6 +58,10 @@ property_lookups  — address_key, address_display, last_sale_price,
                     looked_up_by, looked_up_at
 property_permits  — address_key, permits (jsonb), fetched_at, fetched_by
 api_usage         — user_id, endpoint, date, count (rate limiting)
+
+## Supabase trigger
+on_auth_user_created — sets role: "free", trial_ends_at: now + 30 days
+                       on every new user signup
 
 ## API endpoints built
 POST /api/price/lookup          — { address } → { price, month, year, source }
@@ -76,6 +79,8 @@ api/
   anthropic.js        — Anthropic API proxy
   auth.js             — Supabase auth proxy
   claude.js           — Claude API proxy
+  package.json        — type: module, node >= 18
+  vercel.json         — Vercel Node.js deployment config
   middleware/
     auth.js           — JWT verify, role check, rate limiting
   price/
@@ -92,26 +97,30 @@ api/
     webhook.js        — POST /api/stripe/webhook
 
 ## Environment variables needed
-### API service (api.domusai.vercel.app)
-ANTHROPIC_API_KEY
-SUPABASE_URL
-SUPABASE_KEY          — service role key (not anon)
-STRIPE_WEBHOOK_SECRET — add when Stripe is configured
+### API service (permit-suite-api on Vercel)
+ANTHROPIC_API_KEY     — Anthropic API key
+SUPABASE_URL          — Supabase project URL
+SUPABASE_KEY          — service role key (not anon key)
+STRIPE_WEBHOOK_SECRET — add when Stripe is configured (not yet)
 
 ### Each UI app
-VITE_API_URL          — https://api.domusai.vercel.app
+VITE_API_URL          — https://permit-suite-api.vercel.app
 VITE_SUPABASE_URL     — for direct auth calls
 VITE_SUPABASE_KEY     — anon key only
 
-## IN PROGRESS — needs doing before deployment
-1. Add vercel.json to api/ folder (tells Vercel it's a Node API, not a static site)
-2. Update UI apps to call VITE_API_URL instead of /api/* (relative path)
-3. Deploy api/ as standalone Vercel project
+## IN PROGRESS — next steps
+1. Add env vars to permit-suite-api Vercel project:
+   - ANTHROPIC_API_KEY
+   - SUPABASE_URL
+   - SUPABASE_KEY (service role)
+2. Redeploy API with --prod after env vars set
+3. Update house-value-predictor to call VITE_API_URL instead of /api/*
 4. Deploy house-value-predictor as standalone Vercel project
 5. Smoke test end-to-end with a real address
 6. Delete dead client-side functions from house-value-predictor/App.jsx
+7. Deploy lot-potential
 
-## Next steps after deployment
+## Next steps after smoke test passes
 1. Build POST /api/permit/submit — private → gov portal
 2. Build GET  /api/permit/status — gov → private
 3. Wire permit-submission app to shared API
