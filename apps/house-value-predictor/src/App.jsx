@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from "react";
-import { getUser, signIn, signUp, signOut, authHeaders, getValidToken } from "./auth.js";
+import { getUser, signIn, signUp, signOut, authHeaders, authHeadersAsync, getValidToken } from "./auth.js";
 import { dbGetProperty, dbUpsertProperty, dbGetPermits, dbUpsertPermits } from "./db.js";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
@@ -997,10 +997,9 @@ export default function App() {
     // ── Live lookup via API ────────────────────────────────────────────────
     setLookupSource("searching…");
     try {
-      const token = await getValidToken();
       const res = await fetch(`${import.meta.env.VITE_API_URL || 'https://permit-suite-api.vercel.app'}/api/price/lookup`, {
         method: 'POST',
-        headers: token ? { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` } : { 'Content-Type': 'application/json' },
+        headers: await authHeadersAsync(),
         body: JSON.stringify({ address }),
       });
       setLookupSource("");
@@ -1047,15 +1046,15 @@ export default function App() {
   const [projection, setProjection] = useState(null);
   useEffect(()=>{
     if (!submitted||isNaN(price)||price<=0) { setProjection(null); return; }
-    getValidToken().then(token => {
-    fetch(`${import.meta.env.VITE_API_URL || 'https://permit-suite-api.vercel.app'}/api/price/projection`, {
-      method: 'POST',
-      headers: token ? { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` } : { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ address, purchasePrice: price, purchaseMonth: purchaseStr }),
-    })
-      .then(res => { if (res.status === 401) { handle401(); throw new Error('401'); } return res.ok ? res.json() : Promise.reject(); })
-      .then(({ projection: proj }) => setProjection(proj || null))
-      .catch(() => setProjection(null));
+    authHeadersAsync().then(hdrs => {
+      fetch(`${import.meta.env.VITE_API_URL || 'https://permit-suite-api.vercel.app'}/api/price/projection`, {
+        method: 'POST',
+        headers: hdrs,
+        body: JSON.stringify({ address, purchasePrice: price, purchaseMonth: purchaseStr }),
+      })
+        .then(res => { if (res.status === 401) { handle401(); throw new Error('401'); } return res.ok ? res.json() : Promise.reject(); })
+        .then(({ projection: proj }) => setProjection(proj || null))
+        .catch(() => setProjection(null));
     });
   },[submitted,price,purchaseStr,address]);
 
@@ -1103,12 +1102,12 @@ export default function App() {
     // ── Permits + opportunities via API (handles cache internally) ────────
     setOppsLoading(true);
     setPermitsLoading(true);
-    getValidToken().then(token => {
-    fetch(`${import.meta.env.VITE_API_URL || 'https://permit-suite-api.vercel.app'}/api/permit/opportunities`, {
-      method: 'POST',
-      headers: token ? { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` } : { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ address }),
-    })
+    authHeadersAsync().then(hdrs => {
+      fetch(`${import.meta.env.VITE_API_URL || 'https://permit-suite-api.vercel.app'}/api/permit/opportunities`, {
+        method: 'POST',
+        headers: hdrs,
+        body: JSON.stringify({ address }),
+      })
       .then(res => { if (res.status === 401) { handle401(); throw new Error('401'); } return res.ok ? res.json() : Promise.reject(res.status); })
       .then(({ permits: p, opportunities: o }) => {
         setPermits(p || []);
