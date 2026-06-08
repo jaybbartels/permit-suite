@@ -1075,6 +1075,20 @@ export default function App() {
     if(!canSubmit)return;
     setSubmitted(true);setPermits(null);setPermitsError(null);setOpps(null);setOppsLoading(false);setSelectedOpp(null);setDetail(null);setDetailLoading(false);setPermitSubTab("history");setActiveTab("chart");
 
+    // ── Save manually entered price to API cache ──────────────────────────
+    const apiBase = import.meta.env.VITE_API_URL || 'https://permit-suite-api.vercel.app';
+    fetch(`${apiBase}/api/price/save`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({
+        address,
+        price: parseFloat((priceRaw||'').replace(/[^0-9.]/g,'')),
+        month: purchaseMon,
+        year:  parseInt(purchaseYr),
+        source: 'manual',
+      }),
+    }).catch(() => {});
+
     // ── Permits + opportunities via API (handles cache internally) ────────
     setOppsLoading(true);
     setPermitsLoading(true);
