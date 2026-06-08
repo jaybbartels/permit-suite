@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { authHeaders } from "./auth.js";
 
 const ACCENT = "#6366F1";
 
@@ -243,9 +244,9 @@ export default function App() {
     setOptionDetail(null);
 
     try {
-      const res = await fetch("/api/lot/eligibility", {
+      const res = await fetch(`${import.meta.env.VITE_API_URL || "https://permit-suite-api.vercel.app"}/api/lot/eligibility`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders(),
         body: JSON.stringify({ address }),
       });
       const data = await res.json();
@@ -263,9 +264,9 @@ export default function App() {
     setOptionDetail(null);
     setDetailLoading(true);
     try {
-      const res = await fetch("/api/lot/options", {
+      const res = await fetch(`${import.meta.env.VITE_API_URL || "https://permit-suite-api.vercel.app"}/api/lot/options`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders(),
         body: JSON.stringify({
           address:      result.address,
           stateCode:    result.stateCode,
