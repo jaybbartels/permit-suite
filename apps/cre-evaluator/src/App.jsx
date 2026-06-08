@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
-import { getUser, signIn, signUp, signOut } from "./auth.js";
+import { getUser, signIn, signUp, signOut, authHeaders } from "./auth.js";
 
-var API_URL = "/api/claude";
+var API_URL = (typeof import !== "undefined" && import.meta?.env?.VITE_API_URL ? import.meta.env.VITE_API_URL : "https://permit-suite-api.vercel.app") + "/api/claude";
 var MDL = "claude-haiku-4-5-20251001";
 var CACHE_PREFIX = "cre_v2_";
 var CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
@@ -31,7 +31,7 @@ function cacheKey() {
 function webSearch(query) {
   return fetch(API_URL, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: authHeaders(),
     body: JSON.stringify({
       model: MDL,
       max_tokens: 1024,
@@ -53,7 +53,7 @@ function callAI(msgs, sys, tok, useSearch) {
   if (useSearch) body.tools = [{type:"web_search_20250305",name:"web_search"}];
   return fetch(API_URL, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: authHeaders(),
     body: JSON.stringify(body)
   }).then(function(res) {
     return res.json();
