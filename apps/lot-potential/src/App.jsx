@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { authHeaders, getUser, signIn, signOut, saveSession } from "./auth.js";
+import { authHeaders, authHeadersAsync, getUser, signIn, signOut, saveSession } from "./auth.js";
 
 const ACCENT = "#6366F1";
 
@@ -265,9 +265,10 @@ export default function App() {
     setOptionDetail(null);
 
     try {
+      const hdrs = await authHeadersAsync();
       const res = await fetch(`${import.meta.env.VITE_API_URL || "https://permit-suite-api.vercel.app"}/api/lot/eligibility`, {
         method: "POST",
-        headers: authHeaders(),
+        headers: hdrs,
         body: JSON.stringify({ address }),
       });
       const data = await res.json();
@@ -285,9 +286,10 @@ export default function App() {
     setOptionDetail(null);
     setDetailLoading(true);
     try {
+      const hdrs2 = await authHeadersAsync();
       const res = await fetch(`${import.meta.env.VITE_API_URL || "https://permit-suite-api.vercel.app"}/api/lot/options`, {
         method: "POST",
-        headers: authHeaders(),
+        headers: hdrs2,
         body: JSON.stringify({
           address:      result.address,
           stateCode:    result.stateCode,

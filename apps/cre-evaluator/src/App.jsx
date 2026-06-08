@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { getUser, signIn, signUp, signOut, authHeaders } from "./auth.js";
+import { getUser, signIn, signUp, signOut, authHeaders, authHeadersAsync } from "./auth.js";
 
 var API_URL = (import.meta.env.VITE_API_URL || "https://permit-suite-api.vercel.app") + "/api/claude";
 var MDL = "claude-haiku-4-5-20251001";
@@ -28,10 +28,10 @@ function cacheKey() {
 }
 
 // --- Web search via Anthropic tool use - pulls live Zillow/Redfin/LoopNet data ---
-function webSearch(query) {
+async function webSearch(query) {
   return fetch(API_URL, {
     method: "POST",
-    headers: authHeaders(),
+    headers: await authHeadersAsync(),
     body: JSON.stringify({
       model: MDL,
       max_tokens: 1024,
@@ -47,13 +47,13 @@ function webSearch(query) {
 }
 
 // callAI - with optional web search tool for live property data
-function callAI(msgs, sys, tok, useSearch) {
+async function callAI(msgs, sys, tok, useSearch) {
   tok = tok || 600;
   var body = { model: MDL, max_tokens: tok, system: sys, messages: msgs };
   if (useSearch) body.tools = [{type:"web_search_20250305",name:"web_search"}];
   return fetch(API_URL, {
     method: "POST",
-    headers: authHeaders(),
+    headers: await authHeadersAsync(),
     body: JSON.stringify(body)
   }).then(function(res) {
     return res.json();
