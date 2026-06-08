@@ -1,5 +1,6 @@
-// ── Auth helpers — calls /api/auth proxy ──────────────────────────────────────
+// ── Auth helpers ──────────────────────────────────────────────────────────────
 const AUTH_KEY = "hvp_session";
+const API_URL  = import.meta.env.VITE_API_URL || "https://permit-suite-api.vercel.app";
 
 export function getSession() {
   try { return JSON.parse(localStorage.getItem(AUTH_KEY)); } catch { return null; }
@@ -19,8 +20,22 @@ export function getUserId() {
   return getUser()?.id ?? null;
 }
 
+// Returns the JWT access token for API calls
+export function getToken() {
+  const s = getSession();
+  return s?.access_token ?? null;
+}
+
+// Returns headers with JWT attached — use on every API call
+export function authHeaders() {
+  const token = getToken();
+  return token
+    ? { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }
+    : { 'Content-Type': 'application/json' };
+}
+
 export async function signUp(email, password) {
-  const res = await fetch('/api/auth', {
+  const res = await fetch(`${API_URL}/api/auth`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: 'signup', email, password }),
@@ -32,7 +47,7 @@ export async function signUp(email, password) {
 }
 
 export async function signIn(email, password) {
-  const res = await fetch('/api/auth', {
+  const res = await fetch(`${API_URL}/api/auth`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: 'login', email, password }),
@@ -46,7 +61,7 @@ export async function signIn(email, password) {
 export async function signOut() {
   const s = getSession();
   if (s?.refresh_token) {
-    await fetch('/api/auth', {
+    await fetch(`${API_URL}/api/auth`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'logout', refresh_token: s.refresh_token }),

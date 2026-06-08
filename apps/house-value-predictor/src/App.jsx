@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from "react";
-import { getUser, signIn, signUp, signOut } from "./auth.js";
+import { getUser, signIn, signUp, signOut, authHeaders } from "./auth.js";
 import { dbGetProperty, dbUpsertProperty, dbGetPermits, dbUpsertPermits } from "./db.js";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
@@ -990,9 +990,9 @@ export default function App() {
     // ── Live lookup via API ────────────────────────────────────────────────
     setLookupSource("searching…");
     try {
-      const res = await fetch('/api/price/lookup', {
+      const res = await fetch(`${import.meta.env.VITE_API_URL || 'https://permit-suite-api.vercel.app'}/api/price/lookup`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders(),
         body: JSON.stringify({ address }),
       });
       setLookupSource("");
@@ -1038,9 +1038,9 @@ export default function App() {
   const [projection, setProjection] = useState(null);
   useEffect(()=>{
     if (!submitted||isNaN(price)||price<=0) { setProjection(null); return; }
-    fetch('/api/price/projection', {
+    fetch(`${import.meta.env.VITE_API_URL || 'https://permit-suite-api.vercel.app'}/api/price/projection`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders(),
       body: JSON.stringify({ address, purchasePrice: price, purchaseMonth: purchaseStr }),
     })
       .then(res => res.ok ? res.json() : Promise.reject())
@@ -1078,9 +1078,9 @@ export default function App() {
     // ── Permits + opportunities via API (handles cache internally) ────────
     setOppsLoading(true);
     setPermitsLoading(true);
-    fetch('/api/permit/opportunities', {
+    fetch(`${import.meta.env.VITE_API_URL || 'https://permit-suite-api.vercel.app'}/api/permit/opportunities`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders(),
       body: JSON.stringify({ address }),
     })
       .then(res => res.ok ? res.json() : Promise.reject(res.status))
