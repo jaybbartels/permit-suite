@@ -8,7 +8,7 @@ import {
 } from "./db.js";
 
 // ── API proxy ─────────────────────────────────────────────────────────────────
-const API = "/api/claude";
+const API = (import.meta.env.VITE_API_URL || "https://permit-suite-api.vercel.app") + "/api/claude";
 async function callClaude(payload) {
   try {
     const res = await fetch(API, {

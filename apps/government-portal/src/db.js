@@ -5,7 +5,7 @@ const SCHEMA = "app_data";
 
 function getAuthHeaders() {
   try {
-    const session = JSON.parse(localStorage.getItem("hvp_session") || "{}");
+    const session = JSON.parse(localStorage.getItem("gov_session") || "{}");
     const token = session?.access_token || SUPABASE_KEY;
     return {
       'apikey': SUPABASE_KEY,
