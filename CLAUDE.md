@@ -3,107 +3,78 @@
 
 ## Architecture
 6 Vite + React SPAs + 1 dedicated API service. Deployed separately on Vercel.
-Each app is standalone and must remain functional independently.
 Shared API is a separate Vercel project — apps call it by URL.
+UI layer is thin/swappable — all business logic server-side.
 
 ## Apps
-- apps/house-value-predictor  — residential pricing (wired to API)
-- apps/cre-evaluator          — land/commercial pricing
-- apps/permit-submission      — bridges pricing → permit path
-- apps/government-portal      — ISOLATED — own deployment, own Supabase
-- apps/permit-assistant       — permit process guidance
-- apps/lot-potential          — SB9/state zoning reform eligibility checker
+- apps/house-value-predictor  — DEPLOYED hvp-app-gamma.vercel.app ✓
+- apps/cre-evaluator          — not yet deployed
+- apps/permit-submission      — not yet deployed
+- apps/government-portal      — ISOLATED — not yet deployed
+- apps/permit-assistant       — not yet deployed
+- apps/lot-potential          — not yet deployed
 
-## Deployment status
-- permit-suite-api    LIVE — https://permit-suite-api.vercel.app
-- house-value-predictor — not yet deployed as standalone
-- lot-potential         — not yet deployed
-- permit-submission     — not yet deployed
-- government-portal     — not yet deployed
-- permit-assistant      — not yet deployed
+## API Service
+DEPLOYED: https://permit-suite-api.vercel.app
 
-## Verified working
-- GET  /api/user/me               → 401 UNAUTHENTICATED (correct)
-- POST /api/price/projection      → 401 UNAUTHENTICATED (correct)
-- All auth middleware firing correctly
+## Known limitations
+- Price lookup: Zillow/Redfin encrypt web search snippets — AI can't always
+  extract sale price. Manual entry works and saves to DB cache.
+  Future fix: integrate Attom/RealtyMole/Rentcast API (~$50/mo)
+- Permit lookup: same encrypted content issue — AI fallback works partially
 
-## Deploy command (from repo root)
-vercel --prod --scope domusai
-(links to permit-suite-api project)
-
-## Architecture decisions confirmed
-- Government portal fully isolatable (potential FedRAMP/self-host)
-- Government portal NEVER imports from shared api/ — stays self-contained
-- Supabase: shared users for private sector; gov portal gets own instance
-- Permit-submission is same user journey as pricing apps (private sector)
-- Pricing apps hand off to permit-submission via URL params
-- API is a separate Vercel project — UI apps call it by URL
-- UI layer is thin/swappable — all business logic server-side
-- Deploy API from repo root (not from api/ subfolder)
-
-## Auth + permissions model
-- Supabase JWT — sent as Authorization: Bearer <token> on every API call
-- New users get: role: "free", trial_ends_at: now + 30 days
-- During trial: full pro access regardless of role field
-- After trial: restricted to free tier limits
-- Pro upgrade: Stripe webhook updates role to "pro" in user metadata
-- Government portal: completely separate Supabase instance
+## Auth + permissions
+- Supabase JWT on every API call
+- New users: role "free", trial_ends_at: now + 30 days
+- During trial: full pro access
+- After trial: free tier rate limits apply
+- Pro: Stripe webhook upgrades role (not yet configured)
 
 ## Subscription tiers
-Free (post-trial):
-  - price/lookup: 3/day
-  - permit/opportunities: 2/day
-  - lot/eligibility: 2/day
-  - price/projection: 10/day
-  - No PDF reports
-  - Saved history: last 3 properties
-Pro:
-  - All endpoints unlimited
-  - PDF reports
-  - Unlimited saved history
+Free: price/lookup 3/day, permit/opportunities 2/day,
+      lot/eligibility 2/day, price/projection 10/day
+Pro: unlimited, PDF reports, unlimited saved history
 
 ## Supabase schema (app_data)
-property_lookups  — address_key, address_display, last_sale_price,
-                    last_sale_month, last_sale_year, sale_source,
-                    looked_up_by, looked_up_at
-property_permits  — address_key, permits (jsonb), fetched_at, fetched_by
-api_usage         — user_id, endpoint, date, count (rate limiting)
+property_lookups  — address_key, last_sale_price, last_sale_month,
+                    last_sale_year, sale_source, looked_up_at
+property_permits  — address_key, permits (jsonb), fetched_at
+api_usage         — user_id, endpoint, date, count
 
-## Supabase trigger
-on_auth_user_created — sets role: "free", trial_ends_at: now + 30 days
-
-## API endpoints (all at https://permit-suite-api.vercel.app)
-POST /api/price/lookup          — { address } → { price, month, year, source }
-POST /api/price/projection      — { address, purchasePrice, purchaseMonth } → { metro, projection[] }
-POST /api/permit/opportunities  — { address } → { permits, opportunities }
-POST /api/lot/eligibility       — { address } → { isEligible, options[], disqualified[] }
-POST /api/lot/options           — { address, stateCode, optionType } → { costModel, roi, process }
-GET  /api/user/me               — → { id, email, role, inTrial, trialDaysLeft }
-POST /api/stripe/webhook        — Stripe events → update user role
+## API endpoints (https://permit-suite-api.vercel.app)
+POST /api/price/lookup          — AI waterfall sale price lookup + DB cache
+POST /api/price/save            — Save manually entered price to DB
+POST /api/price/projection      — 20 metro Case-Shiller projection
+POST /api/permit/opportunities  — Permit history + opportunities + DB cache
+POST /api/lot/eligibility       — SB9/state law eligibility check
+POST /api/lot/options           — Cost model, ROI, permit steps
+GET  /api/user/me               — Current user role + trial status
 POST /api/auth                  — Supabase auth proxy
-POST /api/claude                — Anthropic API proxy
+POST /api/stripe/webhook        — Stripe role updates (configured when ready)
+POST /api/debug/lookup          — Raw Anthropic response (remove before launch)
 
-## Environment variables
-### permit-suite-api (set on Vercel)
-ANTHROPIC_API_KEY     ✓ set
-SUPABASE_URL          ✓ set
-SUPABASE_KEY          ✓ set (service role)
-STRIPE_WEBHOOK_SECRET — add when Stripe is configured
+## Deploy command (from repo root)
+vercel --prod --scope domusai  (links to permit-suite-api)
 
-### Each UI app (to be set when deployed)
-VITE_API_URL          — https://permit-suite-api.vercel.app
-VITE_SUPABASE_URL     — for direct auth calls
-VITE_SUPABASE_KEY     — anon key only
+## Environment variables on permit-suite-api
+ANTHROPIC_API_KEY ✓
+SUPABASE_URL      ✓
+SUPABASE_KEY      ✓ (service role)
+
+## house-value-predictor (hvp-app on Vercel)
+URL: https://hvp-app-gamma.vercel.app
+Env: VITE_API_URL, VITE_SUPABASE_URL, VITE_SUPABASE_KEY ✓
+Status: Working — login required, manual price entry saves to DB,
+        projection works, permit lookup works
 
 ## Next steps (in order)
-1. Update house-value-predictor src/auth.js to call VITE_API_URL
-2. Update house-value-predictor App.jsx to send JWT on all API calls
-3. Add VITE_API_URL to house-value-predictor and deploy
-4. Smoke test end-to-end with a real address and real login
-5. Delete dead client-side functions from house-value-predictor/App.jsx
-6. Deploy lot-potential
-7. Build POST /api/permit/submit — private → gov portal boundary
-8. Build GET  /api/permit/status — gov → private
+1. Audit cre-evaluator — what does it do, what needs changing
+2. Audit permit-submission — understand the form flow
+3. Audit permit-assistant — understand the guidance flow
+4. Deploy lot-potential
+5. Remove api/debug/lookup.js before any public launch
+6. Add Stripe checkout when ready to charge
+7. Consider real estate data API for reliable price lookup
 
 ## How to resume
 Paste this entire file at the start of a new Claude conversation and say:
