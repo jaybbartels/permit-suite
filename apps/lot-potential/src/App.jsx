@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { authHeaders } from "./auth.js";
+import { authHeaders, getUser, signIn, signOut, saveSession } from "./auth.js";
 
 const ACCENT = "#6366F1";
 
@@ -227,6 +227,12 @@ function OptionDetail({ detail, onBack }) {
 }
 
 export default function App() {
+  const [user,          setUser]          = useState(getUser());
+  const [showAuth,      setShowAuth]      = useState(false);
+  const [authEmail,     setAuthEmail]     = useState("");
+  const [authPassword,  setAuthPassword]  = useState("");
+  const [authLoading,   setAuthLoading]   = useState(false);
+  const [authError,     setAuthError]     = useState("");
   const [address,       setAddress]       = useState("");
   const [loading,       setLoading]       = useState(false);
   const [error,         setError]         = useState(null);
@@ -234,6 +240,21 @@ export default function App() {
   const [selectedOpt,   setSelectedOpt]   = useState(null);
   const [optionDetail,  setOptionDetail]  = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
+
+  async function handleAuthSubmit() {
+    if (!authEmail.trim() || !authPassword.trim()) return;
+    setAuthLoading(true); setAuthError("");
+    try {
+      await signIn(authEmail, authPassword);
+      setUser(getUser());
+      setShowAuth(false);
+      setAuthEmail(""); setAuthPassword("");
+    } catch(e) {
+      setAuthError(e.message);
+    } finally {
+      setAuthLoading(false);
+    }
+  }
 
   async function handleCheck() {
     if (!address.trim()) return;
@@ -296,11 +317,45 @@ export default function App() {
     <div style={{ fontFamily: "var(--font-sans)", maxWidth: 760, margin: "0 auto", padding: "2rem 1rem" }}>
       <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
 
+      {/* Auth modal */}
+      {showAuth && (
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.55)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:"1rem"}}>
+          <div style={{background:"var(--color-background-primary)",borderRadius:16,padding:"2rem",width:"100%",maxWidth:400,boxShadow:"0 20px 60px rgba(0,0,0,0.2)"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"1.5rem"}}>
+              <h2 style={{fontSize:18,margin:0,fontWeight:600}}>Sign in</h2>
+              <button onClick={()=>setShowAuth(false)} style={{background:"none",border:"none",cursor:"pointer",fontSize:18}}>✕</button>
+            </div>
+            <div style={{display:"flex",flexDirection:"column",gap:10}}>
+              <input type="email" value={authEmail} onChange={e=>setAuthEmail(e.target.value)} placeholder="Email" style={{padding:"9px 12px",borderRadius:"var(--border-radius-md)",border:"1.5px solid var(--color-border-secondary)",fontSize:13}} onKeyDown={e=>e.key==="Enter"&&handleAuthSubmit()}/>
+              <input type="password" value={authPassword} onChange={e=>setAuthPassword(e.target.value)} placeholder="Password" style={{padding:"9px 12px",borderRadius:"var(--border-radius-md)",border:"1.5px solid var(--color-border-secondary)",fontSize:13}} onKeyDown={e=>e.key==="Enter"&&handleAuthSubmit()}/>
+              {authError && <p style={{fontSize:12,color:"#d0222d",margin:0,padding:"8px 12px",background:"#fff0f0",borderRadius:6}}>{authError}</p>}
+              <button onClick={handleAuthSubmit} disabled={authLoading||!authEmail.trim()||!authPassword.trim()} style={{padding:"10px 0",borderRadius:"var(--border-radius-md)",background:authLoading?"#ccc":ACCENT,color:"#fff",border:"none",cursor:"pointer",fontSize:13,fontWeight:600}}>
+                {authLoading ? "…" : "Sign in"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <div style={{ marginBottom: "1.5rem" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 4 }}>
-          <i className="ti ti-layout-grid" style={{ fontSize: 21, color: ACCENT }} />
-          <span style={{ fontSize: 21, fontWeight: 500, color: "var(--color-text-primary)" }}>Lot Potential</span>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 9, marginBottom: 4 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+            <i className="ti ti-layout-grid" style={{ fontSize: 21, color: ACCENT }} />
+            <span style={{ fontSize: 21, fontWeight: 500, color: "var(--color-text-primary)" }}>Lot Potential</span>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {user ? (
+              <>
+                <span style={{fontSize:11,color:"var(--color-text-tertiary)"}}>{user.email}</span>
+                <button onClick={async()=>{await signOut();setUser(null);}} style={{fontSize:11,color:"var(--color-text-secondary)",background:"none",border:"1px solid var(--color-border-tertiary)",borderRadius:6,padding:"3px 8px",cursor:"pointer"}}>Sign out</button>
+              </>
+            ) : (
+              <button onClick={()=>setShowAuth(true)} style={{fontSize:11,color:"var(--color-text-secondary)",background:"none",border:"1px solid var(--color-border-tertiary)",borderRadius:6,padding:"3px 8px",cursor:"pointer",display:"flex",alignItems:"center",gap:4}}>
+                <i className="ti ti-user" style={{fontSize:12}}/>Sign in
+              </button>
+            )}
+          </div>
         </div>
         <p style={{ fontSize: 13, color: "var(--color-text-secondary)", margin: 0, lineHeight: 1.55 }}>
           Check if your property qualifies for lot splits or additional units under state zoning reform laws.
