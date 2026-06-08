@@ -1,4 +1,4 @@
-export const config = { api: { bodyParser: true } };
+export const config = { api: { bodyParser: false } };
 
 export default async function handler(req, res) {
   if (req.method === 'OPTIONS') {
@@ -15,22 +15,15 @@ export default async function handler(req, res) {
     const SUPABASE_KEY = process.env.SUPABASE_KEY;
 
     if (!SUPABASE_URL || !SUPABASE_KEY) {
-      return res.status(500).json({ error: 'Missing env vars', hasUrl: !!SUPABASE_URL, hasKey: !!SUPABASE_KEY });
+      return res.status(500).json({ error: 'Missing env vars' });
     }
 
-    // Parse body — handle string, object, or undefined
-    let body = req.body;
-    if (!body) {
-      // Try reading raw body
-      const chunks = [];
-      for await (const chunk of req) chunks.push(chunk);
-      const raw = Buffer.concat(chunks).toString();
-      try { body = JSON.parse(raw); } catch { body = {}; }
-    }
-    if (typeof body === 'string') {
-      try { body = JSON.parse(body); } catch { body = {}; }
-    }
-    body = body || {};
+    // Read raw body manually
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const raw = Buffer.concat(chunks).toString();
+    let body = {};
+    try { body = JSON.parse(raw); } catch { body = {}; }
 
     const { action, email, password } = body;
 
@@ -55,6 +48,6 @@ export default async function handler(req, res) {
     const data = await r.json();
     return res.status(r.status).json(data);
   } catch (e) {
-    return res.status(500).json({ error: e.message, stack: e.stack });
+    return res.status(500).json({ error: e.message });
   }
 }
