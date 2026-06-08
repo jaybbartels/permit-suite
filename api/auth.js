@@ -1,3 +1,5 @@
+export const config = { api: { bodyParser: true } };
+
 export default async function handler(req, res) {
   if (req.method === 'OPTIONS') {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -10,7 +12,14 @@ export default async function handler(req, res) {
 
   const SUPABASE_URL = process.env.SUPABASE_URL;
   const SUPABASE_KEY = process.env.SUPABASE_KEY;
-  const { action, email, password } = req.body;
+
+  let body = req.body;
+  if (typeof body === 'string') {
+    try { body = JSON.parse(body); } catch { body = {}; }
+  }
+  body = body || {};
+
+  const { action, email, password } = body;
 
   const endpoints = {
     signup: `${SUPABASE_URL}/auth/v1/signup`,
@@ -19,7 +28,7 @@ export default async function handler(req, res) {
   };
 
   const url = endpoints[action];
-  if (!url) return res.status(400).json({ error: 'Unknown action' });
+  if (!url) return res.status(400).json({ error: 'Unknown action', received: action, body });
 
   try {
     const r = await fetch(url, {
