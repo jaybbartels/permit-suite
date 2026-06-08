@@ -889,7 +889,7 @@ async function fetchPermits(address) {
 
 
 // ── Auth Modal ────────────────────────────────────────────────────────────────
-function AuthModal({ onClose, onAuth }) {
+function AuthModal({ onClose, onAuth, sessionExpired }) {
   const [mode, setMode] = useState("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -914,8 +914,8 @@ function AuthModal({ onClose, onAuth }) {
     <>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"1.5rem"}}>
         <div>
-          <h2 style={{fontSize:20,margin:0,color:"var(--color-text-primary)",fontWeight:600}}>{mode==="login"?"Welcome back":"Create account"}</h2>
-          <p style={{fontSize:12,color:"var(--color-text-secondary)",margin:"4px 0 0"}}>Save your property lookups across sessions</p>
+          <h2 style={{fontSize:20,margin:0,color:"var(--color-text-primary)",fontWeight:600}}>{sessionExpired?"Session expired":mode==="login"?"Welcome back":"Create account"}</h2>
+          <p style={{fontSize:12,color:sessionExpired?"#D97706":"var(--color-text-secondary)",margin:"4px 0 0"}}>{sessionExpired?"Your session expired — please sign in again":"Save your property lookups across sessions"}</p>
         </div>
         <button onClick={onClose} style={{background:"none",border:"none",cursor:"pointer",color:"var(--color-text-tertiary)",fontSize:18}}>✕</button>
       </div>
@@ -965,7 +965,14 @@ export default function App() {
   const [lookupMsg,   setLookupMsg]   = useState("");
 
 
-  const [lookupSource, setLookupSource] = useState(""); // which source is being tried
+  const [lookupSource, setLookupSource] = useState("");
+  const [sessionExpired, setSessionExpired] = useState(false);
+
+  // ── Handle 401 — show re-login modal ──────────────────────────────────────
+  function handle401() {
+    setSessionExpired(true);
+    setShowAuth(true);
+  } // which source is being tried
   const [pdfStatus,         setPdfStatus]         = useState("idle");
   const [detailedPdfStatus, setDetailedPdfStatus] = useState("idle"); // idle | generating | success | error
 
@@ -997,6 +1004,7 @@ export default function App() {
         body: JSON.stringify({ address }),
       });
       setLookupSource("");
+      if (res.status === 401) { handle401(); return; }
       if (res.status === 404) {
         setLookupState("notfound");
         setLookupMsg("No sale record found — enter price and date manually.");
@@ -1045,7 +1053,7 @@ export default function App() {
       headers: token ? { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` } : { 'Content-Type': 'application/json' },
       body: JSON.stringify({ address, purchasePrice: price, purchaseMonth: purchaseStr }),
     })
-      .then(res => res.ok ? res.json() : Promise.reject())
+      .then(res => { if (res.status === 401) { handle401(); throw new Error('401'); } return res.ok ? res.json() : Promise.reject(); })
       .then(({ projection: proj }) => setProjection(proj || null))
       .catch(() => setProjection(null));
     });
@@ -1101,7 +1109,7 @@ export default function App() {
       headers: token ? { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` } : { 'Content-Type': 'application/json' },
       body: JSON.stringify({ address }),
     })
-      .then(res => res.ok ? res.json() : Promise.reject(res.status))
+      .then(res => { if (res.status === 401) { handle401(); throw new Error('401'); } return res.ok ? res.json() : Promise.reject(res.status); })
       .then(({ permits: p, opportunities: o }) => {
         setPermits(p || []);
         setOpps(o || []);
@@ -1174,7 +1182,7 @@ export default function App() {
       {showAuth && (
         <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.55)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:"1rem"}}>
           <div style={{background:"var(--color-background-primary)",borderRadius:16,padding:"2rem",width:"100%",maxWidth:400,boxShadow:"0 20px 60px rgba(0,0,0,0.2)"}}>
-            <AuthModal onClose={()=>setShowAuth(false)} onAuth={()=>{setUser(getUser());setShowAuth(false);}} />
+            <AuthModal onClose={()=>{setShowAuth(false);setSessionExpired(false);}} onAuth={()=>{setUser(getUser());setShowAuth(false);setSessionExpired(false);}} sessionExpired={sessionExpired} />
           </div>
         </div>
       )}
