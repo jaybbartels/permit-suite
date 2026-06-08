@@ -1,15 +1,15 @@
 import React from "react";
 import { useState, useEffect, useCallback } from "react";
-import { getSession, getUser, signIn, signUp, signOut, saveSession } from "./auth.js";
+import { getSession, getUser, signIn, signUp, signOut, saveSession, authHeaders } from "./auth.js";
 import { dbSaveApplication, dbLoadApplications, dbLoadApplication, dbSaveDocument } from "./db.js";
 
 // ── API proxy ─────────────────────────────────────────────────────────────────
-const API = "/api/claude";
+const API = (import.meta.env.VITE_API_URL || "https://permit-suite-api.vercel.app") + "/api/claude";
 async function callClaude(payload) {
   try {
     const res = await fetch(API, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders(),
       body: JSON.stringify({ model: "claude-haiku-4-5-20251001", ...payload }),
     });
     if (!res.ok) return { ok: false };
