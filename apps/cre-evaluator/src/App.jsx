@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { getUser, signIn, signUp, signOut, authHeaders } from "./auth.js";
 
-var API_URL = (typeof import !== "undefined" && import.meta?.env?.VITE_API_URL ? import.meta.env.VITE_API_URL : "https://permit-suite-api.vercel.app") + "/api/claude";
+var API_URL = (import.meta.env.VITE_API_URL || "https://permit-suite-api.vercel.app") + "/api/claude";
 var MDL = "claude-haiku-4-5-20251001";
 var CACHE_PREFIX = "cre_v2_";
 var CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
