@@ -9,7 +9,11 @@ async function callAnthropic(payload) {
     },
     body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', ...payload }),
   });
-  if (!res.ok) return { ok: false };
+  if (!res.ok) {
+    const errText = await res.text().catch(() => 'unknown');
+    console.error('Anthropic error:', res.status, errText);
+    return { ok: false, status: res.status, error: errText };
+  }
   const data = await res.json();
   return { ok: true, data };
 }
@@ -192,9 +196,9 @@ export default async function handler(req, res) {
 
   try {
     const result = await lookupLastSale(address.trim());
-    if (!result) return res.status(404).json({ error: 'No sale record found' });
+    if (!result) return res.status(404).json({ error: 'No sale record found', debug: 'waterfall exhausted' });
     return res.status(200).json(result);
   } catch (e) {
-    return res.status(500).json({ error: e.message });
+    return res.status(500).json({ error: e.message, stack: e.stack });
   }
 }
