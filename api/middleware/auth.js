@@ -18,7 +18,7 @@ async function verifyJWT(token) {
   try {
     const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
       headers: {
-        'apikey': SUPABASE_KEY,
+        'apikey': process.env.SUPABASE_ANON_KEY || SUPABASE_KEY,
         'Authorization': `Bearer ${token}`,
       },
     });
