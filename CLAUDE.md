@@ -167,3 +167,15 @@ City level (Woodside, CA):
 3. Audit + deploy permit-assistant
 4. Add Vercel Cron for monthly jurisdiction refresh
 5. Remove api/debug/lookup.js before public launch
+
+## Auth improvements — June 8 2026
+1. Added token expiry check to getToken() — returns null if expired
+2. Added refreshSession() — calls POST /api/auth action:'refresh'
+3. Added getValidToken() — auto-refreshes expired tokens
+4. Added authHeadersAsync() — async version that auto-refreshes
+5. Added refresh action to api/auth.js handler
+6. Added handle401() in App.jsx — shows re-login modal with "Session expired" message
+7. All three fetch calls use authHeadersAsync() — auto-refresh on every API call
+
+TODO: Apply same auth fixes to cre-evaluator, permit-submission, lot-potential
+      (same issue will occur after 1 hour of inactivity in those apps)
