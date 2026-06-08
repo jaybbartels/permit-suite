@@ -4,8 +4,8 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const SCHEMA = 'app_data';
 
-function normalizeAddress(address) {
-  return address.trim().toLowerCase().replace(/\s+/g, ' ');
+function normalizeAddress(a) {
+  return a.trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
 async function dbGetProperty(address) {
@@ -46,33 +46,44 @@ async function dbUpsertProperty({ address, lastSalePrice, lastSaleMonth, lastSal
   } catch {}
 }
 
-function parseSaleJson(text) {
+function extractFromText(text) {
   if (!text) return null;
-  const clean = text.replace(/```json|```/g, '').trim();
-  try {
-    const p = JSON.parse(clean);
-    if (p.price && p.year && p.price > 1000) {
-      return { price: +p.price, month: p.month || 'Jan', year: +p.year, source: p.source || 'web search' };
+  // Try JSON first
+  const jsonMatch = text.match(/\{[^{}]{0,300}\}/g);
+  if (jsonMatch) {
+    for (const m of jsonMatch) {
+      try {
+        const p = JSON.parse(m);
+        if (p.price && p.year && +p.price > 1000) {
+          return { price: +p.price, month: p.month || 'Jan', year: +p.year, source: p.source || 'web search' };
+        }
+      } catch {}
     }
-  } catch {}
-  const m = clean.match(/\{[^{}]{0,500}\}/);
-  if (m) try {
-    const p = JSON.parse(m[0]);
-    if (p.price && p.year && p.price > 1000) {
-      return { price: +p.price, month: p.month || 'Jan', year: +p.year, source: p.source || 'web search' };
-    }
-  } catch {}
-  // Try field-by-field extraction
-  const pm = clean.match(/"price"\s*:\s*(\d{4,9})/);
-  const mm = clean.match(/"month"\s*:\s*"([A-Z][a-z]{2})"/);
-  const ym = clean.match(/"year"\s*:\s*"?(\d{4})"?/);
-  if (pm && ym && +pm[1] > 1000) {
-    return { price: +pm[1], month: mm?.[1] || 'Jan', year: +ym[1], source: 'web search' };
+  }
+  // Try natural language patterns
+  // "sold for $450,000 in March 2021"
+  const m1 = text.match(/sold\s+for\s+\$?([\d,]+)\s+in\s+([A-Za-z]+)\s+(\d{4})/i);
+  if (m1) {
+    const MON = {january:'Jan',february:'Feb',march:'Mar',april:'Apr',may:'May',june:'Jun',july:'Jul',august:'Aug',september:'Sep',october:'Oct',november:'Nov',december:'Dec',jan:'Jan',feb:'Feb',mar:'Mar',apr:'Apr',jun:'Jun',jul:'Jul',aug:'Aug',sep:'Sep',oct:'Oct',nov:'Nov',dec:'Dec'};
+    return { price: +m1[1].replace(/,/g,''), month: MON[m1[2].toLowerCase()] || m1[2].slice(0,3), year: +m1[3], source: 'web search' };
+  }
+  // "last sold: Mar 2021 · $450,000"
+  const m2 = text.match(/last\s+sold[:\s]+([A-Za-z]+)\s+(\d{4})[^$]*\$?([\d,]+)/i);
+  if (m2) {
+    const MON = {january:'Jan',february:'Feb',march:'Mar',april:'Apr',may:'May',june:'Jun',july:'Jul',august:'Aug',september:'Sep',october:'Oct',november:'Nov',december:'Dec',jan:'Jan',feb:'Feb',mar:'Mar',apr:'Apr',jun:'Jun',jul:'Jul',aug:'Aug',sep:'Sep',oct:'Oct',nov:'Nov',dec:'Dec'};
+    return { price: +m2[3].replace(/,/g,''), month: MON[m2[1].toLowerCase()] || m2[1].slice(0,3), year: +m2[2], source: 'web search' };
+  }
+  // "$450,000 in Mar 2021"
+  const m3 = text.match(/\$?([\d,]+)\s+in\s+([A-Za-z]+)\s+(\d{4})/i);
+  if (m3 && +m3[1].replace(/,/g,'') > 10000) {
+    const MON = {january:'Jan',february:'Feb',march:'Mar',april:'Apr',may:'May',june:'Jun',july:'Jul',august:'Aug',september:'Sep',october:'Oct',november:'Nov',december:'Dec',jan:'Jan',feb:'Feb',mar:'Mar',apr:'Apr',jun:'Jun',jul:'Jul',aug:'Aug',sep:'Sep',oct:'Oct',nov:'Nov',dec:'Dec'};
+    return { price: +m3[1].replace(/,/g,''), month: MON[m3[2].toLowerCase()] || m3[2].slice(0,3), year: +m3[3], source: 'web search' };
   }
   return null;
 }
 
-async function callAnthropicSearch(prompt) {
+async function lookupLastSale(address) {
+  // Use sonnet for better instruction following on this task
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -82,49 +93,49 @@ async function callAnthropicSearch(prompt) {
     },
     body: JSON.stringify({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 300,
+      max_tokens: 400,
       tools: [{ type: 'web_search_20250305', name: 'web_search' }],
-      system: 'You are a real estate data-extraction bot. You MUST search the web and extract the actual sale price. Output ONLY raw JSON with no markdown fences.',
-      messages: [{ role: 'user', content: prompt }],
+      system: `You are a real estate data assistant. Search the web for property sale information.
+After searching, you MUST provide the last sale price in this exact format on the last line of your response:
+SALE_DATA: {"price":450000,"month":"Mar","year":2021,"source":"Zillow"}
+If you cannot find a sale price, write:
+SALE_DATA: {"price":null,"month":null,"year":null,"source":null}
+Always include the SALE_DATA line even if the data is null.`,
+      messages: [{ role: 'user', content:
+        `Find the most recent sale price for this property: ${address}\n` +
+        `Search Zillow price history, Redfin sale history, or county records.\n` +
+        `After searching, end your response with the SALE_DATA line.`
+      }],
     }),
   });
-  if (!res.ok) return null;
-  return await res.json();
-}
 
-async function lookupLastSale(address) {
-  // Strategy: Use multiple targeted search queries to find the sale price
-  const queries = [
-    `Search for "${address}" on Zillow. Find the "Price history" or "Sale history" section and extract the most recent "Sold" entry. Output ONLY: {"price":450000,"month":"Mar","year":2021,"source":"Zillow"} or {"price":null,"month":null,"year":null,"source":null}`,
-    `Search for "${address}" sold price on Redfin. Look for "Sale History" or "Last Sold" information. Output ONLY: {"price":450000,"month":"Mar","year":2021,"source":"Redfin"} or {"price":null,"month":null,"year":null,"source":null}`,
-    `Search for the last sale price of "${address}". Try county property records, Realtor.com, or any real estate site. Output ONLY: {"price":450000,"month":"Mar","year":2021,"source":"source name"} or {"price":null,"month":null,"year":null,"source":null}`,
-  ];
+  if (!res.ok) {
+    console.error('Anthropic error:', res.status);
+    return null;
+  }
 
-  for (const query of queries) {
+  const data = await res.json();
+  const blocks = data?.content || [];
+
+  // Extract text from all blocks
+  const fullText = blocks
+    .filter(b => b.type === 'text')
+    .map(b => b.text)
+    .join('\n');
+
+  // Look for SALE_DATA marker first
+  const saleDataMatch = fullText.match(/SALE_DATA:\s*(\{[^}]+\})/);
+  if (saleDataMatch) {
     try {
-      const data = await callAnthropicSearch(query);
-      if (!data) continue;
-
-      const blocks = data?.content || [];
-      // Check all text blocks
-      for (const block of blocks) {
-        if (block.type === 'text' && block.text) {
-          const result = parseSaleJson(block.text);
-          if (result?.price) return result;
-        }
-        // Check tool result content
-        if (block.type === 'web_search_tool_result') {
-          for (const item of block.content || []) {
-            if (item.type === 'web_search_result' && item.snippet) {
-              const result = parseSaleJson(item.snippet);
-              if (result?.price) return result;
-            }
-          }
-        }
+      const p = JSON.parse(saleDataMatch[1]);
+      if (p.price && p.year && +p.price > 1000) {
+        return { price: +p.price, month: p.month || 'Jan', year: +p.year, source: p.source || 'web search' };
       }
     } catch {}
   }
-  return null;
+
+  // Fall back to natural language extraction
+  return extractFromText(fullText);
 }
 
 export default async function handler(req, res) {
@@ -171,7 +182,7 @@ export default async function handler(req, res) {
       });
     }
 
-    // 2. AI web search
+    // 2. AI web search with SALE_DATA marker
     const result = await lookupLastSale(addr);
     if (!result?.price) {
       return res.status(404).json({ error: 'No sale record found' });
