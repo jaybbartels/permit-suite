@@ -179,3 +179,23 @@ City level (Woodside, CA):
 
 TODO: Apply same auth fixes to cre-evaluator, permit-submission, lot-potential
       (same issue will occur after 1 hour of inactivity in those apps)
+
+## Anonymous usage — June 8 2026
+Anonymous users (no login) can now use all demo endpoints with IP-based rate limits:
+  - price/lookup: 3/day
+  - price/projection: 5/day
+  - permit/opportunities: 2/day
+  - lot/eligibility: 2/day
+  - lot/options: 2/day
+
+Always requires login:
+  - permit/submit, user/me, all crawlers, stripe/webhook
+
+When limit hit → 429 with code SIGNUP_REQUIRED → app shows signup modal
+  "You've used your free daily lookups. Sign up for 30 days unlimited."
+
+Database: app_data.anonymous_usage (ip_hash, endpoint, date, count)
+IP is hashed with SHA256 + salt before storage — no raw IPs stored.
+
+TODO: Apply same auth fixes (authHeadersAsync, handle401, handleSignupRequired)
+      to cre-evaluator, permit-submission, and lot-potential apps.
