@@ -889,8 +889,8 @@ async function fetchPermits(address) {
 
 
 // ── Auth Modal ────────────────────────────────────────────────────────────────
-function AuthModal({ onClose, onAuth, sessionExpired }) {
-  const [mode, setMode] = useState("login");
+function AuthModal({ onClose, onAuth, sessionExpired, signupPrompt }) {
+  const [mode, setMode] = useState(signupPrompt ? "signup" : "login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -914,8 +914,8 @@ function AuthModal({ onClose, onAuth, sessionExpired }) {
     <>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"1.5rem"}}>
         <div>
-          <h2 style={{fontSize:20,margin:0,color:"var(--color-text-primary)",fontWeight:600}}>{sessionExpired?"Session expired":mode==="login"?"Welcome back":"Create account"}</h2>
-          <p style={{fontSize:12,color:sessionExpired?"#D97706":"var(--color-text-secondary)",margin:"4px 0 0"}}>{sessionExpired?"Your session expired — please sign in again":"Save your property lookups across sessions"}</p>
+          <h2 style={{fontSize:20,margin:0,color:"var(--color-text-primary)",fontWeight:600}}>{sessionExpired?"Session expired":signupPrompt?"Free trial — unlimited access":mode==="login"?"Welcome back":"Create account"}</h2>
+          <p style={{fontSize:12,color:sessionExpired?"#D97706":signupPrompt?"#059669":"var(--color-text-secondary)",margin:"4px 0 0"}}>{sessionExpired?"Your session expired — please sign in again":signupPrompt?"You've used your free daily lookups. Sign up for 30 days unlimited — no credit card required.":"Save your property lookups across sessions"}</p>
         </div>
         <button onClick={onClose} style={{background:"none",border:"none",cursor:"pointer",color:"var(--color-text-tertiary)",fontSize:18}}>✕</button>
       </div>
@@ -966,12 +966,30 @@ export default function App() {
 
 
   const [lookupSource, setLookupSource] = useState("");
-  const [sessionExpired, setSessionExpired] = useState(false);
+  const [sessionExpired,  setSessionExpired]  = useState(false);
+  const [signupPrompt,    setSignupPrompt]    = useState(false);
 
-  // ── Handle 401 — show re-login modal ──────────────────────────────────────
+  // ── Handle 401/429 — show re-login or signup modal ──────────────────────
   function handle401() {
     setSessionExpired(true);
+    setSignupPrompt(false);
     setShowAuth(true);
+  }
+  function handleSignupRequired() {
+    setSignupPrompt(true);
+    setSessionExpired(false);
+    setShowAuth(true);
+  }
+  async function handleApiError(res) {
+    if (res.status === 401) { handle401(); return true; }
+    if (res.status === 429) {
+      try {
+        const data = await res.clone().json();
+        if (data.code === 'SIGNUP_REQUIRED') { handleSignupRequired(); return true; }
+      } catch {}
+      handle401(); return true;
+    }
+    return false;
   } // which source is being tried
   const [pdfStatus,         setPdfStatus]         = useState("idle");
   const [detailedPdfStatus, setDetailedPdfStatus] = useState("idle"); // idle | generating | success | error
@@ -1181,7 +1199,7 @@ export default function App() {
       {showAuth && (
         <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.55)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:"1rem"}}>
           <div style={{background:"var(--color-background-primary)",borderRadius:16,padding:"2rem",width:"100%",maxWidth:400,boxShadow:"0 20px 60px rgba(0,0,0,0.2)"}}>
-            <AuthModal onClose={()=>{setShowAuth(false);setSessionExpired(false);}} onAuth={()=>{setUser(getUser());setShowAuth(false);setSessionExpired(false);}} sessionExpired={sessionExpired} />
+            <AuthModal onClose={()=>{setShowAuth(false);setSessionExpired(false);setSignupPrompt(false);}} onAuth={()=>{setUser(getUser());setShowAuth(false);setSessionExpired(false);setSignupPrompt(false);}} sessionExpired={sessionExpired} signupPrompt={signupPrompt} />
           </div>
         </div>
       )}

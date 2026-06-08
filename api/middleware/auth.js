@@ -10,8 +10,27 @@ const FREE_LIMITS = {
   'price/lookup':        3,
   'permit/opportunities': 2,
   'lot/eligibility':     2,
-  'price/projection':    10, // cheap — just math
+  'price/projection':    10,
 };
+
+// ── Rate limits for anonymous (no login) per day per IP ───────────────────────
+const ANON_LIMITS = {
+  'price/lookup':         3,
+  'price/projection':     5,
+  'permit/opportunities': 2,
+  'lot/eligibility':      2,
+  'lot/options':          2,
+};
+
+// ── Endpoints that always require login ───────────────────────────────────────
+const LOGIN_REQUIRED = new Set([
+  'permit/submit',
+  'user/me',
+  'jurisdiction/crawl-state',
+  'jurisdiction/crawl-county',
+  'jurisdiction/crawl-city',
+  'stripe/webhook',
+]);
 
 // ── Verify JWT with Supabase ─────────────────────────────────────────────────
 async function verifyJWT(token) {
@@ -25,6 +44,54 @@ async function verifyJWT(token) {
     if (!res.ok) return null;
     return await res.json();
   } catch { return null; }
+}
+
+// ── Hash IP for anonymous tracking ──────────────────────────────────────────
+async function hashIP(ip) {
+  const { createHash } = await import('crypto');
+  return createHash('sha256').update(ip + 'permit-suite-salt').digest('hex').slice(0, 16);
+}
+
+// ── Anonymous rate limit check ────────────────────────────────────────────────
+async function checkAnonLimit(ipHash, endpoint) {
+  const limit = ANON_LIMITS[endpoint];
+  if (!limit) return { allowed: false, reason: 'login_required' };
+
+  const today = new Date().toISOString().slice(0, 10);
+  try {
+    const getRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/anonymous_usage?ip_hash=eq.${ipHash}&endpoint=eq.${encodeURIComponent(endpoint)}&date=eq.${today}&select=count`,
+      {
+        headers: {
+          'apikey': SUPABASE_KEY,
+          'Authorization': `Bearer ${SUPABASE_KEY}`,
+          'Accept-Profile': 'app_data',
+        },
+      }
+    );
+    const rows  = getRes.ok ? await getRes.json() : [];
+    const count = rows[0]?.count || 0;
+
+    if (count >= limit) {
+      return { allowed: false, reason: 'rate_limited', limit, count };
+    }
+
+    await fetch(`${SUPABASE_URL}/rest/v1/anonymous_usage`, {
+      method: 'POST',
+      headers: {
+        'apikey':          SUPABASE_KEY,
+        'Authorization':   `Bearer ${SUPABASE_KEY}`,
+        'Content-Type':    'application/json',
+        'Content-Profile': 'app_data',
+        'Prefer':          'resolution=merge-duplicates',
+      },
+      body: JSON.stringify({ ip_hash: ipHash, endpoint, date: today, count: count + 1 }),
+    });
+
+    return { allowed: true, remaining: limit - count - 1, limit };
+  } catch {
+    return { allowed: true, remaining: null };
+  }
 }
 
 // ── Determine effective role ──────────────────────────────────────────────────
@@ -102,8 +169,36 @@ export async function requireAuth(req, options = {}) {
   const authHeader = req.headers?.authorization || req.headers?.Authorization || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
 
+  // ── Anonymous request (no token) ─────────────────────────────────────────
   if (!token) {
-    return { user: null, role: null, error: { status: 401, message: 'Authentication required. Please sign in.' } };
+    // Some endpoints always require login
+    if (LOGIN_REQUIRED.has(endpoint)) {
+      return { user: null, role: null, error: { status: 401, message: 'Authentication required. Please sign in.' } };
+    }
+
+    // Get IP address
+    const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim()
+             || req.headers['x-real-ip']
+             || req.socket?.remoteAddress
+             || 'unknown';
+    const ipHash = await hashIP(ip);
+
+    // Check anonymous rate limit
+    const anonCheck = await checkAnonLimit(ipHash, endpoint);
+    if (!anonCheck.allowed) {
+      if (anonCheck.reason === 'login_required') {
+        return { user: null, role: 'anon', error: { status: 401, message: 'Please sign in to use this feature.', code: 'LOGIN_REQUIRED' } };
+      }
+      return { user: null, role: 'anon', error: {
+        status: 429,
+        message: `You've used your ${anonCheck.limit} free daily lookups. Sign up free for unlimited access during your 30-day trial.`,
+        code: 'SIGNUP_REQUIRED',
+        limit: anonCheck.limit,
+      }};
+    }
+
+    // Allow anonymous request through
+    return { user: null, role: 'anon', error: null, remaining: anonCheck.remaining };
   }
 
   // Verify with Supabase
