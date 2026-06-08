@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from "react";
-import { getUser, signIn, signUp, signOut, authHeaders } from "./auth.js";
+import { getUser, signIn, signUp, signOut, authHeaders, getValidToken } from "./auth.js";
 import { dbGetProperty, dbUpsertProperty, dbGetPermits, dbUpsertPermits } from "./db.js";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
@@ -990,9 +990,10 @@ export default function App() {
     // ── Live lookup via API ────────────────────────────────────────────────
     setLookupSource("searching…");
     try {
+      const token = await getValidToken();
       const res = await fetch(`${import.meta.env.VITE_API_URL || 'https://permit-suite-api.vercel.app'}/api/price/lookup`, {
         method: 'POST',
-        headers: authHeaders(),
+        headers: token ? { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` } : { 'Content-Type': 'application/json' },
         body: JSON.stringify({ address }),
       });
       setLookupSource("");
@@ -1038,14 +1039,16 @@ export default function App() {
   const [projection, setProjection] = useState(null);
   useEffect(()=>{
     if (!submitted||isNaN(price)||price<=0) { setProjection(null); return; }
+    getValidToken().then(token => {
     fetch(`${import.meta.env.VITE_API_URL || 'https://permit-suite-api.vercel.app'}/api/price/projection`, {
       method: 'POST',
-      headers: authHeaders(),
+      headers: token ? { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` } : { 'Content-Type': 'application/json' },
       body: JSON.stringify({ address, purchasePrice: price, purchaseMonth: purchaseStr }),
     })
       .then(res => res.ok ? res.json() : Promise.reject())
       .then(({ projection: proj }) => setProjection(proj || null))
       .catch(() => setProjection(null));
+    });
   },[submitted,price,purchaseStr,address]);
 
   const chartData = useMemo(()=>{
@@ -1092,9 +1095,10 @@ export default function App() {
     // ── Permits + opportunities via API (handles cache internally) ────────
     setOppsLoading(true);
     setPermitsLoading(true);
+    getValidToken().then(token => {
     fetch(`${import.meta.env.VITE_API_URL || 'https://permit-suite-api.vercel.app'}/api/permit/opportunities`, {
       method: 'POST',
-      headers: authHeaders(),
+      headers: token ? { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` } : { 'Content-Type': 'application/json' },
       body: JSON.stringify({ address }),
     })
       .then(res => res.ok ? res.json() : Promise.reject(res.status))
@@ -1111,6 +1115,7 @@ export default function App() {
         setPermitsLoading(false);
         setOppsLoading(false);
       });
+    });
   },[canSubmit,address,cityKey]);
 
   function tabLabel(t){if(t==="permits"){if(permitsLoading)return"Permits…";if(permits&&permits.length>0)return`Permits (${permits.length})`;}if(t==="valuation")return"Valuation";return t.charAt(0).toUpperCase()+t.slice(1);}

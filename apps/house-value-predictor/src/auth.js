@@ -1,32 +1,27 @@
-// ── Auth helpers ──────────────────────────────────────────────────────────────
 const AUTH_KEY = "hvp_session";
 const API_URL  = import.meta.env.VITE_API_URL || "https://permit-suite-api.vercel.app";
 
 export function getSession() {
   try { return JSON.parse(localStorage.getItem(AUTH_KEY)); } catch { return null; }
 }
-
 export function saveSession(session) {
   if (session) localStorage.setItem(AUTH_KEY, JSON.stringify(session));
   else localStorage.removeItem(AUTH_KEY);
 }
-
 export function getUser() {
   const s = getSession();
   return s?.user ?? null;
 }
-
 export function getUserId() {
   return getUser()?.id ?? null;
 }
-
-// Returns the JWT access token for API calls
 export function getToken() {
   const s = getSession();
-  return s?.access_token ?? null;
+  if (!s?.access_token) return null;
+  // Check if token is expired
+  if (s.expires_at && Date.now() / 1000 > s.expires_at - 60) return null;
+  return s.access_token;
 }
-
-// Returns headers with JWT attached — use on every API call
 export function authHeaders() {
   const token = getToken();
   return token
@@ -34,10 +29,34 @@ export function authHeaders() {
     : { 'Content-Type': 'application/json' };
 }
 
+export async function refreshSession() {
+  const s = getSession();
+  if (!s?.refresh_token) return false;
+  try {
+    const res = await fetch(`${API_URL}/api/auth`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'login', refresh_token: s.refresh_token }),
+    });
+    if (!res.ok) return false;
+    const data = await res.json();
+    if (data.access_token) { saveSession(data); return true; }
+    return false;
+  } catch { return false; }
+}
+
+export async function getValidToken() {
+  const token = getToken();
+  if (token) return token;
+  // Try to refresh
+  const refreshed = await refreshSession();
+  if (refreshed) return getToken();
+  return null;
+}
+
 export async function signUp(email, password) {
   const res = await fetch(`${API_URL}/api/auth`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: 'signup', email, password }),
   });
   const data = await res.json();
@@ -45,11 +64,9 @@ export async function signUp(email, password) {
   if (data.access_token) saveSession(data);
   return data;
 }
-
 export async function signIn(email, password) {
   const res = await fetch(`${API_URL}/api/auth`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: 'login', email, password }),
   });
   const data = await res.json();
@@ -57,13 +74,11 @@ export async function signIn(email, password) {
   saveSession(data);
   return data;
 }
-
 export async function signOut() {
   const s = getSession();
   if (s?.refresh_token) {
     await fetch(`${API_URL}/api/auth`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'logout', refresh_token: s.refresh_token }),
     }).catch(() => {});
   }
