@@ -1,3 +1,4 @@
+import { requireAuth, authError } from '../middleware/auth.js';
 async function callAnthropic(payload) {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -180,6 +181,9 @@ export default async function handler(req, res) {
   }
   res.setHeader('Access-Control-Allow-Origin', '*');
   if (req.method !== 'POST') return res.status(405).end();
+
+  const { error: authErr } = await requireAuth(req, { minRole: 'free', endpoint: 'price/lookup' });
+  if (authErr) return authError(res, authErr);
 
   const { address } = req.body || {};
   if (!address || typeof address !== 'string' || !address.trim()) {

@@ -1,3 +1,4 @@
+import { requireAuth, authError } from '../middleware/auth.js';
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const SCHEMA = 'app_data';
@@ -162,6 +163,9 @@ export default async function handler(req, res) {
   }
   res.setHeader('Access-Control-Allow-Origin', '*');
   if (req.method !== 'POST') return res.status(405).end();
+
+  const { error: authErr } = await requireAuth(req, { minRole: 'free', endpoint: 'permit/opportunities' });
+  if (authErr) return authError(res, authErr);
 
   const { address } = req.body || {};
   if (!address || typeof address !== 'string' || !address.trim()) {

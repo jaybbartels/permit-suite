@@ -1,3 +1,4 @@
+import { requireAuth, authError } from '../middleware/auth.js';
 // ── Cost models by option type and state ─────────────────────────────────────
 const COST_MODELS = {
   duplex: {
@@ -201,6 +202,9 @@ export default async function handler(req, res) {
   }
   res.setHeader('Access-Control-Allow-Origin', '*');
   if (req.method !== 'POST') return res.status(405).end();
+
+  const { error: authErr } = await requireAuth(req, { minRole: 'free', endpoint: 'lot/options' });
+  if (authErr) return authError(res, authErr);
 
   const { address, stateCode, optionType, currentValue, stateLawName } = req.body || {};
 

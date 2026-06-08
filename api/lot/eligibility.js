@@ -1,3 +1,4 @@
+import { requireAuth, authError } from '../middleware/auth.js';
 // ── State zoning reform laws database ─────────────────────────────────────────
 // Each entry defines what the state law permits and key eligibility rules
 const STATE_LAWS = {
@@ -421,6 +422,9 @@ export default async function handler(req, res) {
   }
   res.setHeader('Access-Control-Allow-Origin', '*');
   if (req.method !== 'POST') return res.status(405).end();
+
+  const { error: authErr } = await requireAuth(req, { minRole: 'free', endpoint: 'lot/eligibility' });
+  if (authErr) return authError(res, authErr);
 
   const { address } = req.body || {};
   if (!address || typeof address !== 'string' || !address.trim()) {
