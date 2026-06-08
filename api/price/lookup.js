@@ -23,15 +23,6 @@ async function dbGetProperty(address) {
 
 async function dbUpsertProperty({ address, lastSalePrice, lastSaleMonth, lastSaleYear, saleSource }) {
   const key = normalizeAddress(address);
-  const row = {
-    address_key:     key,
-    address_display: address.trim(),
-    last_sale_price: lastSalePrice,
-    last_sale_month: lastSaleMonth,
-    last_sale_year:  lastSaleYear,
-    sale_source:     saleSource || null,
-    looked_up_at:    new Date().toISOString(),
-  };
   try {
     await fetch(`${SUPABASE_URL}/rest/v1/property_lookups`, {
       method: 'POST',
@@ -42,30 +33,46 @@ async function dbUpsertProperty({ address, lastSalePrice, lastSaleMonth, lastSal
         'Content-Profile': SCHEMA,
         'Prefer': 'resolution=merge-duplicates,return=minimal',
       },
-      body: JSON.stringify(row),
+      body: JSON.stringify({
+        address_key:     key,
+        address_display: address.trim(),
+        last_sale_price: lastSalePrice,
+        last_sale_month: lastSaleMonth,
+        last_sale_year:  lastSaleYear,
+        sale_source:     saleSource || null,
+        looked_up_at:    new Date().toISOString(),
+      }),
     });
   } catch {}
 }
 
 function parseSaleJson(text) {
+  if (!text) return null;
   const clean = text.replace(/```json|```/g, '').trim();
   try {
     const p = JSON.parse(clean);
-    if (p.price && p.year) return { price: +p.price, month: p.month || 'Jan', year: +p.year, source: p.source || 'web search' };
+    if (p.price && p.year && p.price > 1000) {
+      return { price: +p.price, month: p.month || 'Jan', year: +p.year, source: p.source || 'web search' };
+    }
   } catch {}
-  const m = clean.match(/\{[^{}]{0,400}\}/);
+  const m = clean.match(/\{[^{}]{0,500}\}/);
   if (m) try {
     const p = JSON.parse(m[0]);
-    if (p.price && p.year) return { price: +p.price, month: p.month || 'Jan', year: +p.year, source: p.source || 'web search' };
+    if (p.price && p.year && p.price > 1000) {
+      return { price: +p.price, month: p.month || 'Jan', year: +p.year, source: p.source || 'web search' };
+    }
   } catch {}
+  // Try field-by-field extraction
   const pm = clean.match(/"price"\s*:\s*(\d{4,9})/);
   const mm = clean.match(/"month"\s*:\s*"([A-Z][a-z]{2})"/);
   const ym = clean.match(/"year"\s*:\s*"?(\d{4})"?/);
-  if (pm && ym) return { price: +pm[1], month: mm?.[1] || 'Jan', year: +ym[1], source: 'web search' };
+  if (pm && ym && +pm[1] > 1000) {
+    return { price: +pm[1], month: mm?.[1] || 'Jan', year: +ym[1], source: 'web search' };
+  }
   return null;
 }
 
-async function lookupLastSale(address) {
+async function callAnthropicSearch(prompt) {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -75,45 +82,49 @@ async function lookupLastSale(address) {
     },
     body: JSON.stringify({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 500,
+      max_tokens: 300,
       tools: [{ type: 'web_search_20250305', name: 'web_search' }],
-      system: 'You are a real estate data-extraction bot. Output ONLY raw JSON — no markdown, no prose, no explanation.',
-      messages: [{ role: 'user', content:
-        `Search for the last sale price and date of this property: "${address}"\n` +
-        `Search Zillow, Redfin, Realtor.com, and public records.\n` +
-        `Look for "last sold", "sold for", "price history", "sale history".\n` +
-        `Output ONLY this JSON (no markdown, no extra text):\n` +
-        `{"price":450000,"month":"Mar","year":2021,"source":"Zillow"}\n` +
-        `month must be 3-letter abbreviation: Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec\n` +
-        `If no sale found: {"price":null,"month":null,"year":null,"source":null}`
-      }],
+      system: 'You are a real estate data-extraction bot. You MUST search the web and extract the actual sale price. Output ONLY raw JSON with no markdown fences.',
+      messages: [{ role: 'user', content: prompt }],
     }),
   });
+  if (!res.ok) return null;
+  return await res.json();
+}
 
-  if (!res.ok) {
-    const err = await res.text().catch(() => '');
-    console.error('Anthropic error:', res.status, err);
-    return null;
+async function lookupLastSale(address) {
+  // Strategy: Use multiple targeted search queries to find the sale price
+  const queries = [
+    `Search for "${address}" on Zillow. Find the "Price history" or "Sale history" section and extract the most recent "Sold" entry. Output ONLY: {"price":450000,"month":"Mar","year":2021,"source":"Zillow"} or {"price":null,"month":null,"year":null,"source":null}`,
+    `Search for "${address}" sold price on Redfin. Look for "Sale History" or "Last Sold" information. Output ONLY: {"price":450000,"month":"Mar","year":2021,"source":"Redfin"} or {"price":null,"month":null,"year":null,"source":null}`,
+    `Search for the last sale price of "${address}". Try county property records, Realtor.com, or any real estate site. Output ONLY: {"price":450000,"month":"Mar","year":2021,"source":"source name"} or {"price":null,"month":null,"year":null,"source":null}`,
+  ];
+
+  for (const query of queries) {
+    try {
+      const data = await callAnthropicSearch(query);
+      if (!data) continue;
+
+      const blocks = data?.content || [];
+      // Check all text blocks
+      for (const block of blocks) {
+        if (block.type === 'text' && block.text) {
+          const result = parseSaleJson(block.text);
+          if (result?.price) return result;
+        }
+        // Check tool result content
+        if (block.type === 'web_search_tool_result') {
+          for (const item of block.content || []) {
+            if (item.type === 'web_search_result' && item.snippet) {
+              const result = parseSaleJson(item.snippet);
+              if (result?.price) return result;
+            }
+          }
+        }
+      }
+    } catch {}
   }
-
-  const data = await res.json();
-
-  // Check tool results first — often contain raw sale data
-  const allBlocks = data?.content || [];
-  for (const block of allBlocks) {
-    const txt = block.content?.[0]?.text || block.text || '';
-    if (txt) {
-      const scraped = parseSaleJson(txt);
-      if (scraped?.price) return scraped;
-    }
-  }
-
-  // Then check model text output
-  const text = allBlocks
-    .filter(b => b.type === 'text')
-    .map(b => b.text).join('').trim();
-
-  return parseSaleJson(text);
+  return null;
 }
 
 export default async function handler(req, res) {
@@ -129,13 +140,11 @@ export default async function handler(req, res) {
   const { error: authErr } = await requireAuth(req, { minRole: 'free', endpoint: 'price/lookup' });
   if (authErr) return authError(res, authErr);
 
-  // Parse body
   let body = req.body;
   if (!body) {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
-    const raw = Buffer.concat(chunks).toString();
-    try { body = JSON.parse(raw); } catch { body = {}; }
+    try { body = JSON.parse(Buffer.concat(chunks).toString()); } catch { body = {}; }
   }
   if (typeof body === 'string') {
     try { body = JSON.parse(body); } catch { body = {}; }
@@ -150,7 +159,7 @@ export default async function handler(req, res) {
   const addr = address.trim();
 
   try {
-    // 1. Check Supabase cache first
+    // 1. Check Supabase cache
     const cached = await dbGetProperty(addr);
     if (cached?.last_sale_price) {
       return res.status(200).json({
@@ -162,13 +171,13 @@ export default async function handler(req, res) {
       });
     }
 
-    // 2. AI web search lookup
+    // 2. AI web search
     const result = await lookupLastSale(addr);
     if (!result?.price) {
       return res.status(404).json({ error: 'No sale record found' });
     }
 
-    // 3. Cache the result
+    // 3. Cache result
     await dbUpsertProperty({
       address: addr,
       lastSalePrice: result.price,
@@ -179,7 +188,6 @@ export default async function handler(req, res) {
 
     return res.status(200).json(result);
   } catch (e) {
-    console.error('Lookup error:', e.message);
     return res.status(500).json({ error: e.message });
   }
 }
