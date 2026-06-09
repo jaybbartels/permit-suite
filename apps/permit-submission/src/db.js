@@ -7,26 +7,19 @@ function getAuthHeaders() {
   try {
     const session = JSON.parse(localStorage.getItem("hvp_session") || "{}");
     const token = session?.access_token;
-    if (!token) {
-      console.warn('[DB] No access token found — using anon key');
+    if (token) {
       return {
         'apikey': SUPABASE_KEY,
-        'Authorization': `Bearer ${SUPABASE_KEY}`,
+        'Authorization': `Bearer ${token}`,
         'Accept-Profile': SCHEMA,
       };
     }
-    return {
-      'apikey': SUPABASE_KEY,
-      'Authorization': `Bearer ${token}`,
-      'Accept-Profile': SCHEMA,
-    };
-  } catch {
-    return {
-      'apikey': SUPABASE_KEY,
-      'Authorization': `Bearer ${SUPABASE_KEY}`,
-      'Accept-Profile': SCHEMA,
-    };
-  }
+  } catch {}
+  return {
+    'apikey': SUPABASE_KEY,
+    'Authorization': `Bearer ${SUPABASE_KEY}`,
+    'Accept-Profile': SCHEMA,
+  };
 }
 
 export async function dbSaveApplication(appData) {
@@ -34,8 +27,6 @@ export async function dbSaveApplication(appData) {
   const { id, ...data } = appData;
   const clean = Object.fromEntries(Object.entries(data).filter(([,v]) => v !== undefined));
   clean.updated_at = new Date().toISOString();
-
-  console.log('[DB] Saving application, user_id:', clean.user_id, 'id:', id || 'new');
 
   try {
     if (id) {
@@ -47,7 +38,7 @@ export async function dbSaveApplication(appData) {
           body: JSON.stringify(clean),
         }
       );
-      if (!res.ok) { const e = await res.text(); console.error('[DB] Update error:', e); return null; }
+      if (!res.ok) { console.error('[DB] Update error:', await res.text()); return null; }
       const rows = await res.json();
       return rows[0] ?? null;
     } else {
@@ -59,9 +50,8 @@ export async function dbSaveApplication(appData) {
           body: JSON.stringify(clean),
         }
       );
-      if (!res.ok) { const e = await res.text(); console.error('[DB] Insert error:', e); return null; }
+      if (!res.ok) { console.error('[DB] Insert error:', await res.text()); return null; }
       const rows = await res.json();
-      console.log('[DB] Application saved:', rows[0]?.id);
       return rows[0] ?? null;
     }
   } catch (e) {
@@ -77,9 +67,9 @@ export async function dbLoadApplications(userId) {
       `${SUPABASE_URL}/rest/v1/permit_applications?user_id=eq.${userId}&order=updated_at.desc`,
       { headers }
     );
-    if (!res.ok) { console.error('[DB] Load apps error:', await res.text()); return []; }
+    if (!res.ok) return [];
     return await res.json();
-  } catch (e) { console.error('[DB] Load apps error:', e.message); return []; }
+  } catch { return []; }
 }
 
 export async function dbLoadApplication(id) {
@@ -92,7 +82,7 @@ export async function dbLoadApplication(id) {
     if (!res.ok) return null;
     const rows = await res.json();
     return rows[0] ?? null;
-  } catch (e) { console.error('[DB] Load app error:', e.message); return null; }
+  } catch { return null; }
 }
 
 export async function dbSaveDocument({ applicationId, userId, docId, file }) {
@@ -112,27 +102,23 @@ export async function dbSaveDocument({ applicationId, userId, docId, file }) {
         body: file,
       }
     );
-    if (!uploadRes.ok) { console.error('[DB] Storage upload error:', await uploadRes.text()); return null; }
+    if (!uploadRes.ok) { console.error('[DB] Storage error:', await uploadRes.text()); return null; }
 
     const headers = getAuthHeaders();
-    await fetch(
-      `${SUPABASE_URL}/rest/v1/permit_documents`,
-      {
-        method: 'POST',
-        headers: { ...headers, 'Content-Type': 'application/json', 'Content-Profile': SCHEMA, 'Prefer': 'return=minimal' },
-        body: JSON.stringify({
-          application_id: applicationId,
-          user_id: userId,
-          document_type: docId,
-          display_name: file.name,
-          storage_path: path,
-          file_name: file.name,
-          file_size: file.size,
-          mime_type: file.type,
-        }),
-      }
-    );
-    console.log('[DB] Document uploaded:', path);
+    await fetch(`${SUPABASE_URL}/rest/v1/permit_documents`, {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json', 'Content-Profile': SCHEMA, 'Prefer': 'return=minimal' },
+      body: JSON.stringify({
+        application_id: applicationId,
+        user_id: userId,
+        document_type: docId,
+        display_name: file.name,
+        storage_path: path,
+        file_name: file.name,
+        file_size: file.size,
+        mime_type: file.type,
+      }),
+    });
     return path;
-  } catch (e) { console.error('[DB] Document upload error:', e.message); return null; }
+  } catch (e) { console.error('[DB] Document error:', e.message); return null; }
 }
