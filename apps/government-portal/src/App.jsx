@@ -292,6 +292,14 @@ function ReviewPanel({ appId, user, department, onBack, onStatusChange }) {
   const [histLoading,   setHistLoading]  = useState(false);
   const [activeTab,     setActiveTab]    = useState("application");
   const [updating,      setUpdating]     = useState(false);
+  const [reviews,        setReviews]       = useState([]);
+  const [assignedDepts,  setAssignedDepts] = useState([]);
+  const [assigning,      setAssigning]     = useState(false);
+  const [deptComment,    setDeptComment]   = useState("");
+  const [deptReviews,    setDeptReviews]   = useState([]);
+  const [postingDept,    setPostingDept]   = useState(false);
+  const [isCorrectDept,  setIsCorrectDept] = useState(false);
+  const API_URL = import.meta.env.VITE_API_URL || "https://permit-suite-api.vercel.app";
 
   useEffect(() => { loadAll(); }, [appId]);
 
@@ -414,15 +422,6 @@ Check: 1) Document completeness 2) Code compliance for city/county/state 3) Cons
 
   if (loading) return <div style={{ textAlign:"center", padding:"4rem" }}><Spinner size={32}/></div>;
   if (!app) return <div style={{ padding:"2rem", color:C.red }}>Application not found.</div>;
-
-  const API_URL = import.meta.env.VITE_API_URL || "https://permit-suite-api.vercel.app";
-  const [reviews,        setReviews]       = useState([]);
-  const [assignedDepts,  setAssignedDepts] = useState([]);
-  const [assigning,      setAssigning]     = useState(false);
-  const [deptComment,    setDeptComment]   = useState("");
-  const [deptReviews,    setDeptReviews]   = useState([]);
-  const [postingDept,    setPostingDept]   = useState(false);
-  const [isCorrectDept,  setIsCorrectDept] = useState(false);
 
   const ALL_DEPTS = [
     { id:'planning',             label:'Planning' },
