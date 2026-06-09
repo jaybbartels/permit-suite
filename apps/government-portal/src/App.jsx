@@ -161,12 +161,28 @@ function QueueView({ user, onSelect, cityFilter, setCityFilter, department }) {
   const [filter, setFilter]   = useState("all");
   const [search, setSearch]   = useState("");
 
-  useEffect(() => { loadQueue(); }, [filter, cityFilter]);
+  useEffect(() => { loadQueue(); }, [filter, cityFilter, department?.id]);
 
   async function loadQueue() {
     setLoading(true);
     const data = await dbGetQueue({ status: filter === "all" ? null : filter, city: cityFilter });
-    setApps(data || []);
+    let apps = data || [];
+
+    // For non-overall departments, filter to only permits assigned to this dept
+    if (department && department.id !== 'overall') {
+      try {
+        const API_URL = import.meta.env.VITE_API_URL || "https://permit-suite-api.vercel.app";
+        const { authHeadersAsync } = await import('./auth.js');
+        const hdrs = await authHeadersAsync();
+        const res = await fetch(`${API_URL}/api/review/queue?department=${department.id}`, { headers: hdrs });
+        if (res.ok) {
+          const { applicationIds } = await res.json();
+          apps = apps.filter(a => applicationIds.includes(a.id));
+        }
+      } catch {}
+    }
+
+    setApps(apps);
     setLoading(false);
   }
 
@@ -299,6 +315,7 @@ function ReviewPanel({ appId, user, department, onBack, onStatusChange }) {
   const [deptReviews,    setDeptReviews]   = useState([]);
   const [postingDept,    setPostingDept]   = useState(false);
   const [isCorrectDept,  setIsCorrectDept] = useState(false);
+  const [reviewComments, setReviewComments] = useState([]);
   const API_URL = import.meta.env.VITE_API_URL || "https://permit-suite-api.vercel.app";
 
   useEffect(() => { loadAll(); }, [appId]);
@@ -315,6 +332,20 @@ function ReviewPanel({ appId, user, department, onBack, onStatusChange }) {
     setComments(commData || []);
     if (aiData) setAIReview(aiData);
     setLoading(false);
+    // Also load review comments from new API
+    loadReviewComments();
+  }
+
+  async function loadReviewComments() {
+    try {
+      const { authHeadersAsync } = await import('./auth.js');
+      const hdrs = await authHeadersAsync();
+      const res = await fetch(`${API_URL}/api/review/comments?application_id=${appId}`, { headers: hdrs });
+      if (res.ok) {
+        const { comments: c } = await res.json();
+        setReviewComments(c || []);
+      }
+    } catch {}
   }
 
   async function loadHistory() {
@@ -518,7 +549,7 @@ Check: 1) Document completeness 2) Code compliance for city/county/state 3) Cons
     { id:"application", label:"Application" },
     ...(isOverall ? [
       { id:"assign",   label:"Assign Depts" + (assignedDepts.length ? ` (${assignedDepts.length})` : '') },
-      { id:"allcomments", label:`All Comments (${comments.length})` },
+      { id:"allcomments", label:`All Comments (${reviewComments.length})` },
       { id:"report",   label:"Issue Report" },
     ] : [
       { id:"deptreview", label:`${department?.label || 'Dept'} Review` },
@@ -833,7 +864,7 @@ Check: 1) Document completeness 2) Code compliance for city/county/state 3) Cons
       {activeTab==="allcomments" && isOverall && (
         <div style={{ display:"flex", flexDirection:"column", gap:"1rem" }}>
           {ALL_DEPTS.map(d => {
-            const dComments = comments.filter ? comments.filter(c => c.department === d.id) : [];
+            const dComments = reviewComments.filter(c => c.department === d.id);
             if (!assignedDepts.includes(d.id)) return null;
             return (
               <Card key={d.id} style={{ padding:"1.25rem" }}>
@@ -979,6 +1010,8 @@ export default function App() {
 
   if (!authReady) return null;
   if (!user) return <AuthModal onAuth={handleAuth} />;
+
+  useEffect(() => { setView("queue"); setSelectedApp(null); }, [department?.id]);
 
   if (!department) return (
     <div style={{minHeight:'100vh',background:C.gray,display:'flex',alignItems:'center',justifyContent:'center',padding:'1rem'}}>
