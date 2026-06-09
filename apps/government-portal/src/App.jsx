@@ -1008,10 +1008,10 @@ export default function App() {
     { id: 'asrb',                label: 'Architecture & Site Review Board',      icon: '🏛' },
   ];
 
+  useEffect(() => { setView("queue"); setSelectedApp(null); }, [department?.id]);
+
   if (!authReady) return null;
   if (!user) return <AuthModal onAuth={handleAuth} />;
-
-  useEffect(() => { setView("queue"); setSelectedApp(null); }, [department?.id]);
 
   if (!department) return (
     <div style={{minHeight:'100vh',background:C.gray,display:'flex',alignItems:'center',justifyContent:'center',padding:'1rem'}}>
