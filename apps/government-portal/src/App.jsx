@@ -155,7 +155,7 @@ function AuthModal({ onAuth }) {
 }
 
 // ── Queue View ────────────────────────────────────────────────────────────────
-function QueueView({ user, onSelect, cityFilter, setCityFilter }) {
+function QueueView({ user, onSelect, cityFilter, setCityFilter, department }) {
   const [apps, setApps]       = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter]   = useState("all");
@@ -201,6 +201,14 @@ function QueueView({ user, onSelect, cityFilter, setCityFilter }) {
           </Card>
         ))}
       </div>
+
+      {/* Department context banner */}
+      {department && department.id !== 'overall' && (
+        <div style={{background:'#EBF5FB',border:'1px solid #2E86C1',borderRadius:8,padding:'10px 14px',marginBottom:'1rem',fontSize:13,color:'#1B4F82',display:'flex',alignItems:'center',gap:8}}>
+          <span style={{fontSize:18}}>{department.icon}</span>
+          <span>Showing permits assigned to <strong>{department.label}</strong></span>
+        </div>
+      )}
 
       {/* Filters */}
       <div style={{ display:"flex", gap:10, marginBottom:"1rem", flexWrap:"wrap" }}>
@@ -270,7 +278,7 @@ function QueueView({ user, onSelect, cityFilter, setCityFilter }) {
 }
 
 // ── Review Panel ──────────────────────────────────────────────────────────────
-function ReviewPanel({ appId, user, onBack, onStatusChange }) {
+function ReviewPanel({ appId, user, department, onBack, onStatusChange }) {
   const [app,           setApp]          = useState(null);
   const [loading,       setLoading]      = useState(true);
   const [comments,      setComments]     = useState([]);
@@ -407,11 +415,118 @@ Check: 1) Document completeness 2) Code compliance for city/county/state 3) Cons
   if (loading) return <div style={{ textAlign:"center", padding:"4rem" }}><Spinner size={32}/></div>;
   if (!app) return <div style={{ padding:"2rem", color:C.red }}>Application not found.</div>;
 
+  const API_URL = import.meta.env.VITE_API_URL || "https://permit-suite-api.vercel.app";
+  const [reviews,        setReviews]       = useState([]);
+  const [assignedDepts,  setAssignedDepts] = useState([]);
+  const [assigning,      setAssigning]     = useState(false);
+  const [deptComment,    setDeptComment]   = useState("");
+  const [deptReviews,    setDeptReviews]   = useState([]);
+  const [postingDept,    setPostingDept]   = useState(false);
+  const [isCorrectDept,  setIsCorrectDept] = useState(false);
+
+  const ALL_DEPTS = [
+    { id:'planning',             label:'Planning' },
+    { id:'building',             label:'Building' },
+    { id:'engineering',          label:'Engineering' },
+    { id:'fire',                 label:'Woodside Fire' },
+    { id:'geologist',            label:'Town Geologist' },
+    { id:'environmental_health', label:'San Mateo County EH' },
+    { id:'asrb',                 label:'ASRB' },
+  ];
+
+  useEffect(() => { if (appId) loadReviewStatus(); }, [appId]);
+
+  async function loadReviewStatus() {
+    try {
+      const { authHeadersAsync } = await import('./auth.js');
+      const hdrs = await authHeadersAsync();
+      const res = await fetch(`${API_URL}/api/review/status?application_id=${appId}`, { headers: hdrs });
+      if (res.ok) {
+        const { reviews: r } = await res.json();
+        setReviews(r || []);
+        setAssignedDepts(r?.map(rv => rv.department) || []);
+      }
+    } catch {}
+  }
+
+  async function handleAssignDepts(depts) {
+    setAssigning(true);
+    try {
+      const { authHeadersAsync } = await import('./auth.js');
+      const hdrs = await authHeadersAsync();
+      await fetch(`${API_URL}/api/review/assign`, {
+        method: 'POST', headers: hdrs,
+        body: JSON.stringify({ application_id: appId, departments: depts }),
+      });
+      setAssignedDepts(depts);
+      await loadReviewStatus();
+    } catch {} finally { setAssigning(false); }
+  }
+
+  async function handleDeptComment() {
+    if (!deptComment.trim() || !department) return;
+    setPostingDept(true);
+    try {
+      const { authHeadersAsync } = await import('./auth.js');
+      const hdrs = await authHeadersAsync();
+      const res = await fetch(`${API_URL}/api/review/comments`, {
+        method: 'POST', headers: hdrs,
+        body: JSON.stringify({
+          application_id: appId,
+          department: department.id,
+          content: deptComment,
+          reviewer_name: user.email,
+          is_correction: isCorrectDept,
+        }),
+      });
+      if (res.ok) {
+        setDeptComment('');
+        setIsCorrectDept(false);
+        await loadDeptComments();
+      }
+    } catch {} finally { setPostingDept(false); }
+  }
+
+  async function loadDeptComments() {
+    try {
+      const { authHeadersAsync } = await import('./auth.js');
+      const hdrs = await authHeadersAsync();
+      const deptId = department?.id;
+      if (!deptId) return;
+      const res = await fetch(`${API_URL}/api/review/comments?application_id=${appId}&department=${deptId}`, { headers: hdrs });
+      if (res.ok) {
+        const { comments: c } = await res.json();
+        setDeptReviews(c || []);
+      }
+    } catch {}
+  }
+
+  async function handleIssueReport() {
+    try {
+      const { authHeadersAsync } = await import('./auth.js');
+      const hdrs = await authHeadersAsync();
+      const res = await fetch(`${API_URL}/api/review/report`, {
+        method: 'POST', headers: hdrs,
+        body: JSON.stringify({ application_id: appId, issued_by_name: user.email }),
+      });
+      if (res.ok) alert('Report issued successfully!');
+    } catch {}
+  }
+
+  const isOverall = department?.id === 'overall';
+  const deptId = department?.id;
+
   const TABS = [
     { id:"application", label:"Application" },
-    { id:"ai", label:"AI Review" + (aiReview ? " ✓" : "") },
+    ...(isOverall ? [
+      { id:"assign",   label:"Assign Depts" + (assignedDepts.length ? ` (${assignedDepts.length})` : '') },
+      { id:"allcomments", label:`All Comments (${comments.length})` },
+      { id:"report",   label:"Issue Report" },
+    ] : [
+      { id:"deptreview", label:`${department?.label || 'Dept'} Review` },
+    ]),
+    { id:"ai",      label:"AI Review" + (aiReview ? " ✓" : "") },
     { id:"history", label:"Property History" },
-    { id:"comments", label:`Comments (${comments.length})` },
   ];
 
   return (
@@ -441,7 +556,7 @@ Check: 1) Document completeness 2) Code compliance for city/county/state 3) Cons
       {/* Tabs */}
       <div style={{ display:"flex", borderBottom:`1.5px solid ${C.border}`, marginBottom:"1.5rem", gap:0 }}>
         {TABS.map(t => (
-          <button key={t.id} onClick={()=>{ setActiveTab(t.id); if(t.id==="history"&&!history.length) loadHistory(); }}
+          <button key={t.id} onClick={()=>{ setActiveTab(t.id); if(t.id==="history"&&!history.length) loadHistory(); if(t.id==="deptreview") loadDeptComments(); if(t.id==="allcomments"||t.id==="assign") loadReviewStatus(); }}
             style={{ padding:"10px 18px", border:"none", background:"none", cursor:"pointer", fontSize:13, fontWeight:activeTab===t.id?600:400,
               color:activeTab===t.id?C.navy:C.muted,
               borderBottom:activeTab===t.id?`2.5px solid ${C.navy}`:"2.5px solid transparent",
@@ -643,7 +758,6 @@ Check: 1) Document completeness 2) Code compliance for city/county/state 3) Cons
       {/* Comments tab */}
       {activeTab==="comments" && (
         <div style={{ display:"flex", flexDirection:"column", gap:"1rem" }}>
-          {/* Post comment */}
           <Card style={{ padding:"1.25rem" }}>
             <p style={{ fontSize:11, fontWeight:700, color:C.muted, textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:10 }}>Post Comment</p>
             <textarea value={newComment} onChange={e=>setNewComment(e.target.value)} placeholder="Enter your comment or correction request…" style={{ minHeight:80, resize:"vertical", marginBottom:10 }} />
@@ -661,8 +775,6 @@ Check: 1) Document completeness 2) Code compliance for city/county/state 3) Cons
               <Btn size="sm" onClick={postComment} loading={postingComment} disabled={!newComment.trim()}>Post Comment</Btn>
             </div>
           </Card>
-
-          {/* Comment thread */}
           {comments.length === 0 ? (
             <Card style={{ padding:"2rem", textAlign:"center", color:C.muted, fontSize:13 }}>No comments yet.</Card>
           ) : (
@@ -671,9 +783,7 @@ Check: 1) Document completeness 2) Code compliance for city/county/state 3) Cons
                 <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:6 }}>
                   <div style={{ display:"flex", gap:8, alignItems:"center" }}>
                     <span style={{ fontSize:12, fontWeight:600, color:C.text }}>{c.author_name||c.author_role}</span>
-                    <span style={{ fontSize:10, padding:"2px 8px", borderRadius:4, background:C.gray, color:C.muted }}>{c.author_role}</span>
                     {c.is_correction_request && <span style={{ fontSize:10, padding:"2px 8px", borderRadius:4, background:"#FDEBD0", color:"#784212", fontWeight:600 }}>Correction Request</span>}
-                    {c.is_internal && <span style={{ fontSize:10, padding:"2px 8px", borderRadius:4, background:"#F4ECF7", color:C.purple, fontWeight:600 }}>Internal</span>}
                   </div>
                   <span style={{ fontSize:11, color:C.muted }}>{new Date(c.created_at).toLocaleDateString()}</span>
                 </div>
@@ -681,6 +791,137 @@ Check: 1) Document completeness 2) Code compliance for city/county/state 3) Cons
               </Card>
             ))
           )}
+        </div>
+      )}
+
+      {/* ── Assign Departments (Overall only) ── */}
+      {activeTab==="assign" && isOverall && (
+        <Card style={{ padding:"1.5rem" }}>
+          <p style={{ fontSize:14, fontWeight:600, color:C.navy, marginBottom:4 }}>Assign Reviewing Departments</p>
+          <p style={{ fontSize:12, color:C.muted, marginBottom:16 }}>Select which departments need to review this permit application.</p>
+          <div style={{ display:"flex", flexDirection:"column", gap:8, marginBottom:16 }}>
+            {ALL_DEPTS.map(d => {
+              const checked = assignedDepts.includes(d.id);
+              const review = reviews.find(r => r.department === d.id);
+              return (
+                <label key={d.id} style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 14px", border:`1px solid ${checked?C.blue:C.border}`, borderRadius:8, cursor:"pointer", background:checked?"#EBF5FB":"#fff" }}>
+                  <input type="checkbox" checked={checked}
+                    onChange={e => {
+                      const next = e.target.checked
+                        ? [...assignedDepts, d.id]
+                        : assignedDepts.filter(x => x !== d.id);
+                      setAssignedDepts(next);
+                    }}
+                    style={{ width:16, height:16, accentColor:C.navy }} />
+                  <span style={{ fontSize:13, fontWeight:500, flex:1 }}>{d.label}</span>
+                  {review && (
+                    <span style={{ fontSize:11, padding:"2px 8px", borderRadius:4,
+                      background: review.status==='submitted'?'#D5F5E3':review.status==='in_review'?'#EBF5FB':'#F4F6F7',
+                      color: review.status==='submitted'?'#1E8449':review.status==='in_review'?'#1B4F82':'#7F8C8D' }}>
+                      {review.status} · {review.commentCount||0} comments
+                    </span>
+                  )}
+                </label>
+              );
+            })}
+          </div>
+          <Btn onClick={()=>handleAssignDepts(assignedDepts)} loading={assigning}>
+            Save Department Assignments
+          </Btn>
+        </Card>
+      )}
+
+      {/* ── All Comments (Overall review) ── */}
+      {activeTab==="allcomments" && isOverall && (
+        <div style={{ display:"flex", flexDirection:"column", gap:"1rem" }}>
+          {ALL_DEPTS.map(d => {
+            const dComments = comments.filter ? comments.filter(c => c.department === d.id) : [];
+            if (!assignedDepts.includes(d.id)) return null;
+            return (
+              <Card key={d.id} style={{ padding:"1.25rem" }}>
+                <p style={{ fontSize:12, fontWeight:700, color:C.navy, marginBottom:10, textTransform:"uppercase", letterSpacing:"0.05em" }}>{d.label}</p>
+                {dComments.length === 0 ? (
+                  <p style={{ fontSize:12, color:C.muted }}>No comments submitted yet.</p>
+                ) : dComments.map(c => (
+                  <div key={c.id} style={{ borderLeft:`3px solid ${c.is_correction?C.orange:C.blue}`, paddingLeft:12, marginBottom:10 }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4 }}>
+                      <span style={{ fontSize:12, fontWeight:600 }}>{c.reviewer_name}</span>
+                      <div style={{ display:"flex", gap:6, alignItems:"center" }}>
+                        {c.is_correction && <span style={{ fontSize:10, padding:"2px 6px", borderRadius:4, background:"#FDEBD0", color:"#784212" }}>Correction</span>}
+                        <label style={{ fontSize:11, color:C.muted, display:"flex", alignItems:"center", gap:4, cursor:"pointer" }}>
+                          <input type="checkbox" checked={c.is_included !== false}
+                            onChange={async e => {
+                              const { authHeadersAsync } = await import('./auth.js');
+                              const hdrs = await authHeadersAsync();
+                              await fetch(`${API_URL}/api/review/comments`, {
+                                method:'PATCH', headers:hdrs,
+                                body: JSON.stringify({ id: c.id, is_included: e.target.checked }),
+                              });
+                            }}
+                            style={{ width:14, height:14, accentColor:C.navy }} />
+                          Include in report
+                        </label>
+                      </div>
+                    </div>
+                    <p style={{ fontSize:13, color:C.text, lineHeight:1.5 }}>{c.content}</p>
+                  </div>
+                ))}
+              </Card>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ── Issue Report (Overall) ── */}
+      {activeTab==="report" && isOverall && (
+        <Card style={{ padding:"1.5rem" }}>
+          <p style={{ fontSize:14, fontWeight:600, color:C.navy, marginBottom:4 }}>Issue Final Report</p>
+          <p style={{ fontSize:12, color:C.muted, marginBottom:16 }}>The report will include all comments marked "Include in report" from each department.</p>
+          <div style={{ background:C.gray, borderRadius:8, padding:"1rem", marginBottom:16, fontSize:13 }}>
+            <p style={{ fontWeight:600, marginBottom:8 }}>Summary</p>
+            {ALL_DEPTS.filter(d => assignedDepts.includes(d.id)).map(d => {
+              const cnt = comments.filter ? comments.filter(c => c.department===d.id && c.is_included!==false).length : 0;
+              return <p key={d.id} style={{ color:C.muted, marginBottom:4 }}>{d.label}: <strong style={{color:C.text}}>{cnt} comment{cnt!==1?'s':''} included</strong></p>;
+            })}
+          </div>
+          <Btn onClick={handleIssueReport} style={{ background:C.green }}>
+            Issue Report & Notify Applicant
+          </Btn>
+        </Card>
+      )}
+
+      {/* ── Department Review (non-Overall) ── */}
+      {activeTab==="deptreview" && !isOverall && (
+        <div style={{ display:"flex", flexDirection:"column", gap:"1rem" }}>
+          <Card style={{ padding:"1.25rem" }}>
+            <p style={{ fontSize:12, fontWeight:700, color:C.navy, marginBottom:10, textTransform:"uppercase", letterSpacing:"0.05em" }}>{department?.label} — Add Comment</p>
+            <textarea value={deptComment} onChange={e=>setDeptComment(e.target.value)}
+              placeholder={`Enter your ${department?.label} review comments…`}
+              style={{ minHeight:100, resize:"vertical", marginBottom:10 }} />
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:8 }}>
+              <label style={{ display:"flex", alignItems:"center", gap:6, fontSize:12, cursor:"pointer" }}>
+                <input type="checkbox" checked={isCorrectDept} onChange={e=>setIsCorrectDept(e.target.checked)} style={{ width:14, height:14, accentColor:C.navy }} />
+                This is a correction request
+              </label>
+              <Btn size="sm" onClick={handleDeptComment} loading={postingDept} disabled={!deptComment.trim()}>
+                Submit Comment
+              </Btn>
+            </div>
+          </Card>
+          {deptReviews.length === 0 ? (
+            <Card style={{ padding:"2rem", textAlign:"center", color:C.muted, fontSize:13 }}>No comments from {department?.label} yet.</Card>
+          ) : deptReviews.map(c => (
+            <Card key={c.id} style={{ padding:"1rem 1.25rem", borderLeft:`3px solid ${c.is_correction?C.orange:C.navy}` }}>
+              <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
+                <span style={{ fontSize:12, fontWeight:600 }}>{c.reviewer_name}</span>
+                <div style={{ display:"flex", gap:6 }}>
+                  {c.is_correction && <span style={{ fontSize:10, padding:"2px 8px", borderRadius:4, background:"#FDEBD0", color:"#784212" }}>Correction</span>}
+                  <span style={{ fontSize:11, color:C.muted }}>{new Date(c.created_at).toLocaleDateString()}</span>
+                </div>
+              </div>
+              <p style={{ fontSize:13, color:C.text, lineHeight:1.6 }}>{c.content}</p>
+            </Card>
+          ))}
         </div>
       )}
     </div>
@@ -725,8 +966,48 @@ export default function App() {
     setView("review");
   }
 
+  const [department, setDepartment] = useState(null);
+
+  const DEPARTMENTS = [
+    { id: 'overall',             label: 'Overall Review',                        icon: '🏛️' },
+    { id: 'planning',            label: 'Planning',                              icon: '📐' },
+    { id: 'building',            label: 'Building',                              icon: '🏗️' },
+    { id: 'engineering',         label: 'Engineering',                           icon: '⚙️' },
+    { id: 'fire',                label: 'Woodside Fire',                         icon: '🚒' },
+    { id: 'geologist',           label: 'Town Geologist',                        icon: '🪨' },
+    { id: 'environmental_health',label: 'San Mateo County Environmental Health', icon: '🌿' },
+    { id: 'asrb',                label: 'Architecture & Site Review Board',      icon: '🏛' },
+  ];
+
   if (!authReady) return null;
   if (!user) return <AuthModal onAuth={handleAuth} />;
+
+  if (!department) return (
+    <div style={{minHeight:'100vh',background:C.gray,display:'flex',alignItems:'center',justifyContent:'center',padding:'1rem'}}>
+      <div style={{width:'100%',maxWidth:480}}>
+        <div style={{textAlign:'center',marginBottom:32}}>
+          <div style={{fontSize:40,marginBottom:8}}>🏛️</div>
+          <h1 style={{fontSize:22,fontWeight:700,color:C.navy,margin:0}}>Town of Woodside</h1>
+          <p style={{fontSize:13,color:C.muted,marginTop:4}}>Select your department to continue</p>
+          <p style={{fontSize:12,color:C.muted,marginTop:2}}>Signed in as {user.email}</p>
+        </div>
+        <div style={{display:'flex',flexDirection:'column',gap:8}}>
+          {DEPARTMENTS.map(d => (
+            <button key={d.id} onClick={()=>setDepartment(d)}
+              style={{display:'flex',alignItems:'center',gap:12,padding:'14px 18px',background:'#fff',border:`1px solid ${C.border}`,borderRadius:8,cursor:'pointer',fontSize:14,color:C.text,textAlign:'left'}}>
+              <span style={{fontSize:22,width:32,textAlign:'center'}}>{d.icon}</span>
+              <span style={{fontWeight:500}}>{d.label}</span>
+              <span style={{marginLeft:'auto',color:C.muted,fontSize:18}}>›</span>
+            </button>
+          ))}
+        </div>
+        <button onClick={()=>{signOut();setUser(null);setProfile(null);}}
+          style={{display:'block',margin:'20px auto 0',background:'none',border:'none',color:C.muted,fontSize:12,cursor:'pointer'}}>
+          Sign out
+        </button>
+      </div>
+    </div>
+  );
 
   return (
     <div style={{ minHeight:"100vh", background:C.gray }}>
@@ -744,7 +1025,8 @@ export default function App() {
         <div style={{ display:"flex", alignItems:"center", gap:10 }}>
           {view==="review" && <Btn size="sm" variant="ghost" onClick={()=>setView("queue")} style={{color:"#8EACC9"}}>← Queue</Btn>}
           <span style={{ fontSize:12, color:"#8EACC9" }}>{user.email}</span>
-          {profile?.role && <span style={{ fontSize:11, padding:"3px 8px", borderRadius:4, background:"#1B4F82", color:"#8EACC9" }}>{profile.role}</span>}
+          {department && <span style={{ fontSize:11, padding:"3px 8px", borderRadius:4, background:"#1B4F82", color:"#fff" }}>{department.label}</span>}
+          <Btn size="sm" variant="ghost" onClick={()=>setDepartment(null)} style={{color:"#8EACC9",fontSize:11}}>Switch dept</Btn>
           <Btn size="sm" variant="secondary" onClick={handleSignOut} style={{fontSize:11}}>Sign out</Btn>
         </div>
       </div>
@@ -757,11 +1039,11 @@ export default function App() {
               <h1 style={{ fontSize:22, fontWeight:700, color:C.navy }}>Permit Queue</h1>
               <p style={{ fontSize:13, color:C.muted, marginTop:4 }}>Review and process submitted permit applications.</p>
             </div>
-            <QueueView user={user} onSelect={selectApp} cityFilter={cityFilter} setCityFilter={setCityFilter} />
+            <QueueView user={user} onSelect={selectApp} cityFilter={cityFilter} setCityFilter={setCityFilter} department={department} />
           </>
         )}
         {view==="review" && selectedApp && (
-          <ReviewPanel appId={selectedApp.id} user={user} onBack={()=>setView("queue")}
+          <ReviewPanel appId={selectedApp.id} user={user} department={department} onBack={()=>setView("queue")}
             onStatusChange={(id,status)=>{ setSelectedApp(prev=>({...prev,status})); }} />
         )}
       </div>
