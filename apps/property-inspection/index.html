@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Lot Potential</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/dist/tabler-icons.min.css"/>
+    <style>
+      :root {
+        --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        --color-text-primary: #111827;
+        --color-text-secondary: #6B7280;
+        --color-text-tertiary: #9CA3AF;
+        --color-background-primary: #FFFFFF;
+        --color-background-secondary: #F9FAFB;
+        --color-border-tertiary: #E5E7EB;
+        --color-border-secondary: #D1D5DB;
+        --border-radius-md: 8px;
+        --border-radius-lg: 12px;
+      }
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      body { font-family: var(--font-sans); background: #F9FAFB; color: var(--color-text-primary); }
+      input, select, button { font-family: inherit; font-size: 13px; }
+      input, select {
+        width: 100%;
+        padding: 9px 12px;
+        border: 1.5px solid var(--color-border-secondary);
+        border-radius: var(--border-radius-md);
+        background: var(--color-background-primary);
+        outline: none;
+      }
+      input:focus, select:focus { border-color: #6366F1; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
