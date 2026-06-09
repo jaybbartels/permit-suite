@@ -302,6 +302,7 @@ function ReviewPanel({ appId, user, department, onBack, onStatusChange }) {
   const API_URL = import.meta.env.VITE_API_URL || "https://permit-suite-api.vercel.app";
 
   useEffect(() => { loadAll(); }, [appId]);
+  useEffect(() => { if (appId) loadReviewStatus(); }, [appId]);
 
   async function loadAll() {
     setLoading(true);
@@ -432,8 +433,6 @@ Check: 1) Document completeness 2) Code compliance for city/county/state 3) Cons
     { id:'environmental_health', label:'San Mateo County EH' },
     { id:'asrb',                 label:'ASRB' },
   ];
-
-  useEffect(() => { if (appId) loadReviewStatus(); }, [appId]);
 
   async function loadReviewStatus() {
     try {
