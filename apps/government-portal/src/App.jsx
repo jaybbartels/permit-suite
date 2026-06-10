@@ -883,10 +883,16 @@ Check: 1) Document completeness 2) Code compliance for city/county/state 3) Cons
                         <label style={{ fontSize:11, color:C.muted, display:"flex", alignItems:"center", gap:4, cursor:"pointer" }}>
                           <input type="checkbox" checked={c.is_included !== false}
                             onChange={async e => {
+                              const newVal = e.target.checked;
+                              // Update local state immediately
+                              setReviewComments(prev => prev.map(rc =>
+                                rc.id === c.id ? {...rc, is_included: newVal} : rc
+                              ));
+                              // Save to API
                               const hdrs = await authHeadersAsync();
                               await fetch(`${API_URL}/api/review/comments`, {
                                 method:'PATCH', headers:hdrs,
-                                body: JSON.stringify({ id: c.id, is_included: e.target.checked }),
+                                body: JSON.stringify({ id: c.id, is_included: newVal }),
                               });
                             }}
                             style={{ width:14, height:14, accentColor:C.navy }} />
