@@ -241,3 +241,25 @@ Full permit review workflow implemented:
 3. Wire inspection scheduling from approved permits
 4. Apply auth fixes to permit-submission
 5. Remove api/debug/lookup.js before public launch
+
+## Permit Review Workflow — Complete June 10 2026
+Full bidirectional workflow working:
+- Gov portal: dept assignment, comments, report issuance, view report
+- Permit submission: view issued report, respond to comments
+- Gov portal: see applicant responses under each comment
+
+## All deployed apps — final status
+- 🏠 House Value Predictor  — https://hvp-app-gamma.vercel.app ✓
+- 🏗️  CRE Evaluator         — https://cre-app-pi.vercel.app ✓
+- 📋 Permit Submission      — https://permit-submission.vercel.app ✓
+- 🔍 Lot Potential (SB9)    — https://lot-potential.vercel.app ✓
+- 🏛️  Government Portal      — https://government-portal-virid.vercel.app ✓
+- 🔍 Property Inspection    — https://property-inspection-delta.vercel.app ✓
+- ⚙️  API Service            — https://permit-suite-api.vercel.app ✓
+
+## Remaining items before public launch
+1. Remove api/debug/lookup.js
+2. Add Stripe checkout for paid tiers
+3. Wire inspection scheduling from approved permits
+4. Apply auth fixes to permit-assistant (not yet deployed)
+5. Consider real estate data API for reliable price lookup
