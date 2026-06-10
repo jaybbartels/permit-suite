@@ -155,16 +155,26 @@ function buildFeeEstimate(permitType, subType, valuation, feeSchedule) {
 }
 
 async function findPrecedents(permitType, subType, address, city, state) {
-  // Check cache first
+  // Normalize permit type for cache lookup
+  const ptNorm = (permitType || '').toLowerCase().replace(/[^a-z]/g, '-');
+
+  // Check cache first — look for same city + permit type
   try {
+    const cityKey = city.toLowerCase().replace(/[^a-z]/g, '-');
     const res = await fetch(
-      `${SUPABASE_URL}/rest/v1/property_history?permit_type=ilike.%25${encodeURIComponent(permitType)}%25&source=eq.etrakit&order=issued_date.desc&limit=5`,
+      `${SUPABASE_URL}/rest/v1/property_history?permit_type=ilike.%25${encodeURIComponent(ptNorm.split('-')[0])}%25&order=issued_date.desc&limit=10`,
       { headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}`, 'Accept-Profile': SCHEMA } }
     );
     if (res.ok) {
       const rows = await res.json();
-      if (rows.length >= 2) {
-        return rows.slice(0, 2).map(r => ({
+      // Filter to same city if address_key contains city name
+      const cityRows = rows.filter(r =>
+        (r.address_key || '').toLowerCase().includes(city.toLowerCase()) ||
+        rows.length <= 3 // if few results, use any city
+      );
+      const useRows = cityRows.length >= 2 ? cityRows : rows;
+      if (useRows.length >= 2) {
+        return useRows.slice(0, 2).map(r => ({
           permit_number: r.permit_number,
           address: r.address_key,
           permit_type: r.permit_type,
@@ -178,47 +188,71 @@ async function findPrecedents(permitType, subType, address, city, state) {
     }
   } catch {}
 
-  // Search eTRAKiT via AI
-  try {
-    const text = await callAI(
-      'You are a permit records researcher. Search public permit databases. Output ONLY a JSON array.',
-      `Search the ${city}, ${state} eTRAKiT permit database at wood.csqrcloud.com for recently ISSUED permits similar to:\n` +
-      `Permit type: ${permitType} / ${subType || 'general'}\n` +
-      `Find 2 recently issued/approved permits of the same type in ${city}, CA.\n` +
-      `Also search recent Woodside CA permit records online.\n` +
-      `Output ONLY this JSON array (no markdown):\n` +
-      `[{"permit_number":"B2024-001","address":"123 Oak Ln, Woodside CA","permit_type":"ADU","description":"Detached ADU 800 sqft","status":"Issued","issued_date":"2024-03-15","valuation":250000}]\n` +
-      `Return [] if none found.`
-    );
+  // Multi-strategy AI search
+  const searches = [
+    `${city} ${state} building permit ${permitType.replace(/-/g,' ')} issued 2024 2023 permit number address`,
+    `site:${city.toLowerCase().replace(/\s+/g,'')}.gov building permit ${permitType.replace(/-/g,' ')} issued approved`,
+    `"${city}" "${state}" permit records "${permitType.replace(/-/g,' ')}" issued approved 2023 2024`,
+  ];
 
-    const precedents = parseJSON(text);
-    if (Array.isArray(precedents) && precedents.length > 0) {
-      // Cache results
-      for (const p of precedents.slice(0, 2)) {
-        try {
-          await fetch(`${SUPABASE_URL}/rest/v1/property_history`, {
-            method: 'POST',
-            headers: {
-              'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}`,
-              'Content-Type': 'application/json', 'Content-Profile': SCHEMA,
-              'Prefer': 'return=minimal',
-            },
-            body: JSON.stringify({
-              address_key: (p.address || '').toLowerCase().trim(),
-              permit_number: p.permit_number || null,
-              permit_type: p.permit_type || permitType,
-              description: p.description || null,
-              status: p.status || 'Issued',
-              issued_date: p.issued_date || null,
-              valuation: p.valuation || null,
-              source: 'etrakit',
-            }),
-          });
-        } catch {}
+  for (const query of searches) {
+    try {
+      const text = await callAI(
+        `You are a permit records researcher. Search for real issued building permits.
+Output ONLY a valid JSON array. No markdown, no explanation, no preamble.
+Each object must have these exact fields: permit_number, address, permit_type, description, status, issued_date, valuation.
+Use null for unknown values. Return [] if you cannot find real permits.`,
+        `Search for: ${query}
+
+Find 2-4 recently ISSUED or APPROVED ${permitType.replace(/-/g,' ')} permits in ${city}, ${state}.
+Look for real permit numbers (like B2023-0142, 2024-00123, BP-2024-001 etc).
+Each permit must have a real street address in ${city}.
+
+Return ONLY this JSON array format:
+[{"permit_number":"B2024-001","address":"123 Oak Ln, ${city} ${state}","permit_type":"${permitType}","description":"brief description","status":"Issued","issued_date":"2024-03-15","valuation":250000}]`
+      );
+
+      const found = parseJSON(text);
+      if (Array.isArray(found) && found.length > 0 &&
+          found.some(p => p.permit_number && p.address)) {
+
+        // Filter out obviously fake results
+        const real = found.filter(p =>
+          p.permit_number &&
+          p.address &&
+          p.permit_number !== 'B2024-001' && // filter template values
+          p.permit_number !== 'UNKNOWN'
+        );
+
+        if (real.length > 0) {
+          // Cache all results
+          for (const p of real) {
+            try {
+              await fetch(`${SUPABASE_URL}/rest/v1/property_history`, {
+                method: 'POST',
+                headers: {
+                  'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}`,
+                  'Content-Type': 'application/json', 'Content-Profile': SCHEMA,
+                  'Prefer': 'return=minimal',
+                },
+                body: JSON.stringify({
+                  address_key: (p.address || '').toLowerCase().trim(),
+                  permit_number: p.permit_number,
+                  permit_type: p.permit_type || permitType,
+                  description: p.description || null,
+                  status: p.status || 'Issued',
+                  issued_date: p.issued_date || null,
+                  valuation: p.valuation || null,
+                  source: 'ai_search',
+                }),
+              });
+            } catch {}
+          }
+          return real.slice(0, 2);
+        }
       }
-      return precedents.slice(0, 2);
-    }
-  } catch {}
+    } catch {}
+  }
 
   return [];
 }

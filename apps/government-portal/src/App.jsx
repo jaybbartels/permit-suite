@@ -556,8 +556,8 @@ Check: 1) Document completeness 2) Code compliance for city/county/state 3) Cons
           permit_type: app?.permit_category || 'addition-remodel',
           sub_type: app?.permit_sub_type || '',
           address: app?.address || '',
-          city: 'Woodside',
-          state: 'CA',
+          city: app?.city_display?.split(',')[0]?.trim() || app?.parcel_data?.city || 'Woodside',
+          state: app?.parcel_data?.state || 'CA',
           form_data: {
             project_valuation: app?.estimated_value || 0,
             square_footage: app?.parcel_data?.sqft || 0,
