@@ -564,7 +564,7 @@ async function claude(system, userMsg, maxTokens = 6000, tools = null) {
     messages: [{ role: "user", content: userMsg }],
   };
   if (tools) body.tools = tools;
-  const r = await fetch("/api/claude", {
+  const r = await fetch(`${import.meta.env.VITE_API_URL || "https://permit-suite-api.vercel.app"}/api/claude`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
