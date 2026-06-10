@@ -553,12 +553,15 @@ Check: 1) Document completeness 2) Code compliance for city/county/state 3) Cons
         method: 'POST', headers: hdrs,
         body: JSON.stringify({
           application_id: appId,
-          permit_type: app?.category || 'addition-remodel',
-          sub_type: app?.sub_type || '',
+          permit_type: app?.permit_category || 'addition-remodel',
+          sub_type: app?.permit_sub_type || '',
           address: app?.address || '',
           city: 'Woodside',
           state: 'CA',
-          form_data: app?.form_data || {},
+          form_data: {
+            project_valuation: app?.estimated_value || 0,
+            square_footage: app?.parcel_data?.sqft || 0,
+          },
         }),
       });
       if (res.ok) {

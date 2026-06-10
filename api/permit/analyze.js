@@ -64,21 +64,37 @@ function calcPermitFee(valuation, feeSchedule) {
 
 function estimateValuation(permitType, subType, formData) {
   // Use form data if available
-  if (formData?.project_valuation) return parseFloat(formData.project_valuation);
-  if (formData?.estimated_cost) return parseFloat(formData.estimated_cost);
+  if (formData?.project_valuation && formData.project_valuation > 0) return parseFloat(formData.project_valuation);
+  if (formData?.estimated_value && formData.estimated_value > 0) return parseFloat(formData.estimated_value);
+  if (formData?.estimated_cost && formData.estimated_cost > 0) return parseFloat(formData.estimated_cost);
 
-  // Estimate by permit type using Woodside min valuation rates
+  // Normalize permit type (handle hyphenated and slash formats)
+  const pt = (permitType || '').toLowerCase().replace(/[^a-z]/g, '-');
   const sqft = formData?.square_footage || formData?.sqft || 0;
+
+  // Map permit categories to valuation estimates
   const estimates = {
-    'new-construction': sqft > 0 ? sqft * 300 : 800000,
-    'addition-remodel': sqft > 0 ? sqft * 200 : 150000,
-    'adu':              sqft > 0 ? sqft * 300 : 250000,
-    'pool':             120000,
-    'fence':            15000,
-    'mep':              25000,
-    'default':          75000,
+    'new-construction':   sqft > 0 ? sqft * 300 : 800000,
+    'new':                sqft > 0 ? sqft * 300 : 800000,
+    'addition-remodel':   sqft > 0 ? sqft * 200 : 150000,
+    'remodel':            sqft > 0 ? sqft * 200 : 150000,
+    'addition':           sqft > 0 ? sqft * 200 : 150000,
+    'adu':                sqft > 0 ? sqft * 300 : 250000,
+    'pool':               120000,
+    'pool-spa':           120000,
+    'fence':              15000,
+    'fence-gate-wall':    15000,
+    'mep':                25000,
+    'solar':              30000,
+    'default':            75000,
   };
-  return estimates[permitType] || estimates.default;
+
+  // Try exact match then partial match
+  if (estimates[pt]) return estimates[pt];
+  for (const [key, val] of Object.entries(estimates)) {
+    if (pt.includes(key) || key.includes(pt)) return val;
+  }
+  return estimates.default;
 }
 
 function buildFeeEstimate(permitType, subType, valuation, feeSchedule) {
