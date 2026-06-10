@@ -221,3 +221,23 @@ government-portal      — uses gov_session, no anon needed
 3. Wire lot-potential to use jurisdiction + parcel data
 4. Audit + deploy permit-assistant
 5. Build POST /api/permit/submit — private → gov portal
+
+## Government Portal Review Workflow — June 9 2026
+Full permit review workflow implemented:
+- Department selector at login (Overall, Planning, Building, Engineering, 
+  Fire, Geologist, Environmental Health, ASRB)
+- Overall Review: assign departments, see all comments, include/exclude,
+  issue report, view issued report
+- Department reviewers: see only assigned permits in queue,
+  add comments with correction flag
+- New tables: permit_reviews, permit_review_comments, permit_reports,
+  applicant_responses
+- New API endpoints: /api/review/assign, /api/review/comments,
+  /api/review/report, /api/review/status, /api/review/queue
+
+## Next steps
+1. Show issued report in permit-submission app (property owner view)
+2. Allow property owner to respond to each comment
+3. Wire inspection scheduling from approved permits
+4. Apply auth fixes to permit-submission
+5. Remove api/debug/lookup.js before public launch
