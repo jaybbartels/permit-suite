@@ -917,7 +917,7 @@ Check: 1) Document completeness 2) Code compliance for city/county/state 3) Cons
           <div style={{ background:C.gray, borderRadius:8, padding:"1rem", marginBottom:16, fontSize:13 }}>
             <p style={{ fontWeight:600, marginBottom:8 }}>Summary</p>
             {ALL_DEPTS.filter(d => assignedDepts.includes(d.id)).map(d => {
-              const cnt = comments.filter ? comments.filter(c => c.department===d.id && c.is_included!==false).length : 0;
+              const cnt = reviewComments.filter(c => c.department===d.id && c.is_included!==false).length;
               return <p key={d.id} style={{ color:C.muted, marginBottom:4 }}>{d.label}: <strong style={{color:C.text}}>{cnt} comment{cnt!==1?'s':''} included</strong></p>;
             })}
           </div>
