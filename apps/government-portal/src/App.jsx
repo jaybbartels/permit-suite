@@ -325,6 +325,7 @@ function ReviewPanel({ appId, user, department, onBack, onStatusChange }) {
   const [postingDept,    setPostingDept]   = useState(false);
   const [isCorrectDept,  setIsCorrectDept] = useState(false);
   const [reviewComments, setReviewComments] = useState([]);
+  const [issuedReport,   setIssuedReport]   = useState(null);
   const API_URL = import.meta.env.VITE_API_URL || "https://permit-suite-api.vercel.app";
 
   useEffect(() => { loadAll(); }, [appId]);
@@ -341,8 +342,9 @@ function ReviewPanel({ appId, user, department, onBack, onStatusChange }) {
     setComments(commData || []);
     if (aiData) setAIReview(aiData);
     setLoading(false);
-    // Also load review comments from new API
+    // Also load review comments and issued report from new API
     loadReviewComments();
+    loadIssuedReport();
   }
 
   async function loadReviewComments() {
@@ -521,6 +523,17 @@ Check: 1) Document completeness 2) Code compliance for city/county/state 3) Cons
     } catch {} finally { setPostingDept(false); }
   }
 
+  async function loadIssuedReport() {
+    try {
+      const hdrs = await authHeadersAsync();
+      const res = await fetch(`${API_URL}/api/review/report?application_id=${appId}`, { headers: hdrs });
+      if (res.ok) {
+        const { report } = await res.json();
+        setIssuedReport(report);
+      }
+    } catch {}
+  }
+
   async function loadDeptComments() {
     try {
       const hdrs = await authHeadersAsync();
@@ -541,7 +554,10 @@ Check: 1) Document completeness 2) Code compliance for city/county/state 3) Cons
         method: 'POST', headers: hdrs,
         body: JSON.stringify({ application_id: appId, issued_by_name: user.email }),
       });
-      if (res.ok) alert('Report issued successfully!');
+      if (res.ok) {
+        await loadIssuedReport();
+        setActiveTab('viewreport');
+      }
     } catch {}
   }
 
@@ -554,6 +570,7 @@ Check: 1) Document completeness 2) Code compliance for city/county/state 3) Cons
       { id:"assign",   label:"Assign Depts" + (assignedDepts.length ? ` (${assignedDepts.length})` : '') },
       { id:"allcomments", label:`All Comments (${reviewComments.length})` },
       { id:"report",   label:"Issue Report" },
+      { id:"viewreport", label:"View Report" + (issuedReport ? " ✓" : "") },
     ] : [
       { id:"deptreview", label:`${department?.label || 'Dept'} Review` },
     ]),
@@ -925,6 +942,55 @@ Check: 1) Document completeness 2) Code compliance for city/county/state 3) Cons
             Issue Report & Notify Applicant
           </Btn>
         </Card>
+      )}
+
+      {/* ── View Report ── */}
+      {activeTab==="viewreport" && (
+        <div style={{ display:"flex", flexDirection:"column", gap:"1rem" }}>
+          {!issuedReport ? (
+            <Card style={{ padding:"2rem", textAlign:"center", color:C.muted, fontSize:13 }}>
+              No report issued yet.
+            </Card>
+          ) : (
+            <Card style={{ padding:"1.5rem" }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:16 }}>
+                <div>
+                  <p style={{ fontSize:14, fontWeight:700, color:C.navy, margin:0 }}>Official Review Report</p>
+                  <p style={{ fontSize:12, color:C.muted, marginTop:4 }}>
+                    Version {issuedReport.version} · Issued {new Date(issuedReport.issued_at).toLocaleDateString()} · By {issuedReport.issued_by_name}
+                  </p>
+                </div>
+                <span style={{ fontSize:11, padding:"3px 10px", borderRadius:4, background:"#D5F5E3", color:C.green, fontWeight:600 }}>Issued</span>
+              </div>
+              <div style={{ display:"flex", gap:12, marginBottom:16, flexWrap:"wrap" }}>
+                <div style={{ background:C.gray, borderRadius:8, padding:"10px 16px", flex:1, minWidth:120 }}>
+                  <p style={{ fontSize:22, fontWeight:700, color:C.navy, margin:0 }}>{issuedReport.report_content?.totalComments || 0}</p>
+                  <p style={{ fontSize:11, color:C.muted, marginTop:2 }}>Total comments</p>
+                </div>
+                <div style={{ background:C.gray, borderRadius:8, padding:"10px 16px", flex:1, minWidth:120 }}>
+                  <p style={{ fontSize:22, fontWeight:700, color:C.orange, margin:0 }}>{issuedReport.report_content?.totalCorrections || 0}</p>
+                  <p style={{ fontSize:11, color:C.muted, marginTop:2 }}>Corrections required</p>
+                </div>
+              </div>
+              {(issuedReport.report_content?.departments || []).map(dept => (
+                <div key={dept.department} style={{ marginBottom:16 }}>
+                  <p style={{ fontSize:12, fontWeight:700, color:C.navy, textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:8 }}>{dept.label}</p>
+                  {dept.comments.length === 0 ? (
+                    <p style={{ fontSize:12, color:C.muted }}>No comments included.</p>
+                  ) : dept.comments.map((c, i) => (
+                    <div key={i} style={{ borderLeft:`3px solid ${c.is_correction?C.orange:C.blue}`, paddingLeft:12, marginBottom:10 }}>
+                      <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4 }}>
+                        <span style={{ fontSize:12, fontWeight:600 }}>{c.reviewer}</span>
+                        {c.is_correction && <span style={{ fontSize:10, padding:"2px 6px", borderRadius:4, background:"#FDEBD0", color:"#784212" }}>Correction required</span>}
+                      </div>
+                      <p style={{ fontSize:13, color:C.text, lineHeight:1.6, margin:0 }}>{c.content}</p>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </Card>
+          )}
+        </div>
       )}
 
       {/* ── Department Review (non-Overall) ── */}
