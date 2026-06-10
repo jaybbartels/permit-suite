@@ -263,3 +263,24 @@ Full bidirectional workflow working:
 3. Wire inspection scheduling from approved permits
 4. Apply auth fixes to permit-assistant (not yet deployed)
 5. Consider real estate data API for reliable price lookup
+
+## Permit Assistant — deployed June 10 2026
+URL: https://permit-assistant.vercel.app
+Purpose: Research tool — enter any city, loads permit requirements from 
+  permit_data.permit_cities table. If city not in DB, looks it up via AI 
+  and saves for future lookups.
+Built-in cities: Woodside CA, Portola Valley CA
+Schema: permit_data (separate from app_data)
+Table: permit_data.permit_cities (id, display_name, name, state, data jsonb)
+Note: VITE_API_URL must be https://permit-suite-api.vercel.app
+      (not the app's own URL — common mistake)
+
+## All 7 apps deployed
+- 🏠 House Value Predictor  — https://hvp-app-gamma.vercel.app
+- 🏗️  CRE Evaluator         — https://cre-app-pi.vercel.app
+- 📋 Permit Submission      — https://permit-submission.vercel.app
+- 🔍 Lot Potential (SB9)    — https://lot-potential.vercel.app
+- 🏛️  Government Portal      — https://government-portal-virid.vercel.app
+- 🔍 Property Inspection    — https://property-inspection-delta.vercel.app
+- 🧭 Permit Assistant       — https://permit-assistant.vercel.app
+- ⚙️  API Service            — https://permit-suite-api.vercel.app
