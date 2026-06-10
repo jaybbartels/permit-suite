@@ -325,6 +325,8 @@ function ReviewPanel({ appId, user, department, onBack, onStatusChange }) {
   const [postingDept,    setPostingDept]   = useState(false);
   const [isCorrectDept,  setIsCorrectDept] = useState(false);
   const [reviewComments, setReviewComments] = useState([]);
+  const [applicantResponses, setApplicantResponses] = useState([]);
+  const [applicantResponses, setApplicantResponses] = useState([]);
   const [issuedReport,   setIssuedReport]   = useState(null);
   const API_URL = import.meta.env.VITE_API_URL || "https://permit-suite-api.vercel.app";
 
@@ -350,12 +352,19 @@ function ReviewPanel({ appId, user, department, onBack, onStatusChange }) {
   async function loadReviewComments() {
     try {
       const hdrs = await authHeadersAsync();
-      const res = await fetch(`${API_URL}/api/review/comments?application_id=${appId}`, { headers: hdrs });
-      if (res.ok) {
-        const { comments: c } = await res.json();
+      const [commRes, respRes] = await Promise.all([
+        fetch(`${API_URL}/api/review/comments?application_id=${appId}`, { headers: hdrs }),
+        fetch(`${API_URL}/api/review/responses?application_id=${appId}`, { headers: hdrs }),
+      ]);
+      if (commRes.ok) {
+        const { comments: c } = await commRes.json();
         setReviewComments(c || []);
       }
-    } catch {}
+      if (respRes.ok) {
+        const { responses: r } = await respRes.json();
+        setApplicantResponses(r || []);
+      }
+    } catch (e) { console.error('loadReviewComments error:', e); }
   }
 
   async function loadHistory() {
@@ -918,6 +927,13 @@ Check: 1) Document completeness 2) Code compliance for city/county/state 3) Cons
                       </div>
                     </div>
                     <p style={{ fontSize:13, color:C.text, lineHeight:1.5 }}>{c.content}</p>
+                    {applicantResponses.filter(r => r.comment_id === c.id).map((r, ri) => (
+                      <div key={ri} style={{ marginTop:8, background:C.light, borderRadius:6, padding:'8px 12px', borderLeft:`3px solid ${C.sky}` }}>
+                        <p style={{ fontSize:11, fontWeight:700, color:C.sky, marginBottom:4 }}>APPLICANT RESPONSE</p>
+                        <p style={{ fontSize:12, color:C.text, lineHeight:1.5, margin:0 }}>{r.content}</p>
+                        <p style={{ fontSize:10, color:C.muted, marginTop:4 }}>{new Date(r.created_at).toLocaleDateString()}</p>
+                      </div>
+                    ))}
                   </div>
                 ))}
               </Card>
