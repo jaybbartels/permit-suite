@@ -1081,8 +1081,8 @@ export default function App() {
             <QueueView user={user} onSelect={selectApp} cityFilter={cityFilter} setCityFilter={setCityFilter} department={department} />
           </>
         )}
-        {view==="review" && selectedApp && (
-          <ReviewPanel appId={selectedApp.id} user={user} department={department} onBack={()=>setView("queue")}
+        {view==="review" && selectedApp?.id && (
+          <ReviewPanel key={selectedApp.id} appId={selectedApp.id} user={user} department={department} onBack={()=>setView("queue")}
             onStatusChange={(id,status)=>{ setSelectedApp(prev=>({...prev,status})); }} />
         )}
       </div>
