@@ -167,14 +167,12 @@ async function findPrecedents(permitType, subType, address, city, state) {
     );
     if (res.ok) {
       const rows = await res.json();
-      // Filter to same city if address_key contains city name
+      // Strictly filter to same city only
       const cityRows = rows.filter(r =>
-        (r.address_key || '').toLowerCase().includes(city.toLowerCase()) ||
-        rows.length <= 3 // if few results, use any city
+        (r.address_key || '').toLowerCase().includes(city.toLowerCase())
       );
-      const useRows = cityRows.length >= 2 ? cityRows : rows;
-      if (useRows.length >= 2) {
-        return useRows.slice(0, 2).map(r => ({
+      if (cityRows.length >= 2) {
+        return cityRows.slice(0, 2).map(r => ({
           permit_number: r.permit_number,
           address: r.address_key,
           permit_type: r.permit_type,
@@ -189,10 +187,23 @@ async function findPrecedents(permitType, subType, address, city, state) {
   } catch {}
 
   // Multi-strategy AI search
+  // City-specific portal URLs
+  const portalUrls = {
+    'woodside':      'wood.csqrcloud.com/community-etrakit',
+    'portola valley':'portolavalley.net permits',
+    'menlo park':    'menlopark.gov permits building',
+    'atherton':      'ci.atherton.ca.us permits building',
+    'palo alto':     'cityofpaloalto.org permits building',
+    'san francisco': 'sfdbi.org permits OR permits.sfgov.org',
+    'redwood city':  'redwoodcity.org permits building',
+    'san mateo':     'cityofsanmateo.org permits building',
+  };
+  const portalHint = portalUrls[city.toLowerCase()] || `${city.toLowerCase().replace(/\s+/g,'')}.gov permits building`;
+
   const searches = [
-    `${city} ${state} building permit ${permitType.replace(/-/g,' ')} issued 2024 2023 permit number address`,
-    `site:${city.toLowerCase().replace(/\s+/g,'')}.gov building permit ${permitType.replace(/-/g,' ')} issued approved`,
-    `"${city}" "${state}" permit records "${permitType.replace(/-/g,' ')}" issued approved 2023 2024`,
+    `${city} ${state} building permit ${permitType.replace(/-/g,' ')} issued 2024 2023 permit number address valuation`,
+    `${portalHint} ${permitType.replace(/-/g,' ')} permit issued approved 2023 2024`,
+    `"${city}, ${state}" building permit records "${permitType.replace(/-/g,' ')}" issued 2023 2024 valuation`,
   ];
 
   for (const query of searches) {
