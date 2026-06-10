@@ -326,6 +326,8 @@ function ReviewPanel({ appId, user, department, onBack, onStatusChange }) {
   const [isCorrectDept,  setIsCorrectDept] = useState(false);
   const [reviewComments, setReviewComments] = useState([]);
   const [applicantResponses, setApplicantResponses] = useState([]);
+  const [analysis,          setAnalysis]          = useState(null);
+  const [analysisLoading,   setAnalysisLoading]   = useState(false);
   const [issuedReport,   setIssuedReport]   = useState(null);
   const API_URL = import.meta.env.VITE_API_URL || "https://permit-suite-api.vercel.app";
 
@@ -542,6 +544,30 @@ Check: 1) Document completeness 2) Code compliance for city/county/state 3) Cons
     } catch {}
   }
 
+  async function loadAnalysis() {
+    if (analysis) return; // already loaded
+    setAnalysisLoading(true);
+    try {
+      const hdrs = await authHeadersAsync();
+      const res = await fetch(`${API_URL}/api/permit/analyze`, {
+        method: 'POST', headers: hdrs,
+        body: JSON.stringify({
+          application_id: appId,
+          permit_type: app?.category || 'addition-remodel',
+          sub_type: app?.sub_type || '',
+          address: app?.address || '',
+          city: 'Woodside',
+          state: 'CA',
+          form_data: app?.form_data || {},
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setAnalysis(data);
+      }
+    } catch {} finally { setAnalysisLoading(false); }
+  }
+
   async function loadDeptComments() {
     try {
       const hdrs = await authHeadersAsync();
@@ -579,6 +605,7 @@ Check: 1) Document completeness 2) Code compliance for city/county/state 3) Cons
       { id:"allcomments", label:`All Comments (${reviewComments.length})` },
       { id:"report",   label:"Issue Report" },
       { id:"viewreport", label:"View Report" + (issuedReport ? " ✓" : "") },
+      { id:"analyze",    label:"Fee & Precedents" },
     ] : [
       { id:"deptreview", label:`${department?.label || 'Dept'} Review` },
     ]),
@@ -613,7 +640,7 @@ Check: 1) Document completeness 2) Code compliance for city/county/state 3) Cons
       {/* Tabs */}
       <div style={{ display:"flex", borderBottom:`1.5px solid ${C.border}`, marginBottom:"1.5rem", gap:0 }}>
         {TABS.map(t => (
-          <button key={t.id} onClick={()=>{ setActiveTab(t.id); if(t.id==="history"&&!history.length) loadHistory(); if(t.id==="deptreview") loadDeptComments(); if(t.id==="allcomments"||t.id==="assign") loadReviewStatus(); }}
+          <button key={t.id} onClick={()=>{ setActiveTab(t.id); if(t.id==="history"&&!history.length) loadHistory(); if(t.id==="deptreview") loadDeptComments(); if(t.id==="allcomments"||t.id==="assign") loadReviewStatus(); if(t.id==="analyze") loadAnalysis(); }}
             style={{ padding:"10px 18px", border:"none", background:"none", cursor:"pointer", fontSize:13, fontWeight:activeTab===t.id?600:400,
               color:activeTab===t.id?C.navy:C.muted,
               borderBottom:activeTab===t.id?`2.5px solid ${C.navy}`:"2.5px solid transparent",
@@ -1004,6 +1031,72 @@ Check: 1) Document completeness 2) Code compliance for city/county/state 3) Cons
                 </div>
               ))}
             </Card>
+          )}
+        </div>
+      )}
+
+      {/* ── Fee & Precedents ── */}
+      {activeTab==="analyze" && (
+        <div style={{ display:"flex", flexDirection:"column", gap:"1rem" }}>
+          {analysisLoading ? (
+            <Card style={{ padding:"2rem", textAlign:"center", color:C.muted }}>
+              <Spinner size={24}/><p style={{marginTop:12,fontSize:13}}>Calculating fees and searching for precedents…</p>
+            </Card>
+          ) : !analysis ? (
+            <Card style={{ padding:"2rem", textAlign:"center", color:C.muted, fontSize:13 }}>
+              Click the tab to load fee estimate and similar permits.
+            </Card>
+          ) : (
+            <>
+              {/* Fee estimate */}
+              <Card style={{ padding:"1.5rem" }}>
+                <p style={{ fontSize:14, fontWeight:700, color:C.navy, marginBottom:4 }}>Estimated Permit Fees</p>
+                <p style={{ fontSize:12, color:C.muted, marginBottom:16 }}>
+                  Based on {analysis.feeEstimate?.effectiveDate} Woodside fee schedule · 
+                  Confidence: <strong style={{color:analysis.feeEstimate?.confidence==='high'?C.green:C.orange}}>{analysis.feeEstimate?.confidence}</strong>
+                </p>
+                <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))", gap:10, marginBottom:16 }}>
+                  {(analysis.feeEstimate?.breakdown || []).map((item, i) => (
+                    <div key={i} style={{ background:C.gray, borderRadius:8, padding:"10px 14px" }}>
+                      <p style={{ fontSize:18, fontWeight:700, color:C.navy, margin:0 }}>
+                        ${item.amount?.toLocaleString()}
+                      </p>
+                      <p style={{ fontSize:11, color:C.muted, marginTop:2 }}>{item.label}</p>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ background:"#EAFAF1", borderRadius:8, padding:"10px 16px", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                  <span style={{ fontSize:14, fontWeight:700, color:C.green }}>Total Estimate</span>
+                  <span style={{ fontSize:22, fontWeight:700, color:C.green }}>${analysis.feeEstimate?.totalEstimate?.toLocaleString()}</span>
+                </div>
+                <p style={{ fontSize:11, color:C.muted, marginTop:10 }}>{analysis.feeEstimate?.notes}</p>
+                <p style={{ fontSize:11, color:C.orange, marginTop:4 }}>{analysis.feeEstimate?.paymentNote}</p>
+              </Card>
+
+              {/* Precedents */}
+              <Card style={{ padding:"1.5rem" }}>
+                <p style={{ fontSize:14, fontWeight:700, color:C.navy, marginBottom:4 }}>Similar Approved Permits</p>
+                <p style={{ fontSize:12, color:C.muted, marginBottom:12 }}>Recently issued permits of the same type in Woodside</p>
+                {!analysis.precedents?.length ? (
+                  <p style={{ fontSize:13, color:C.muted }}>No similar precedents found in database yet. Database builds over time as permits are analyzed.</p>
+                ) : (
+                  analysis.precedents.map((p, i) => (
+                    <div key={i} style={{ borderLeft:`3px solid ${C.sky}`, paddingLeft:12, marginBottom:14 }}>
+                      <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4 }}>
+                        <span style={{ fontSize:13, fontWeight:600, color:C.text }}>{p.permit_number}</span>
+                        <span style={{ fontSize:11, padding:"2px 8px", borderRadius:4, background:"#EAFAF1", color:C.green, fontWeight:600 }}>{p.status}</span>
+                      </div>
+                      <p style={{ fontSize:12, color:C.muted, marginBottom:4 }}>{p.address}</p>
+                      <p style={{ fontSize:12, color:C.text, marginBottom:4 }}>{p.description}</p>
+                      <div style={{ display:"flex", gap:16, fontSize:11, color:C.muted }}>
+                        {p.issued_date && <span>Issued: {p.issued_date}</span>}
+                        {p.valuation && <span>Valuation: ${Number(p.valuation).toLocaleString()}</span>}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </Card>
+            </>
           )}
         </div>
       )}
