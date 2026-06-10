@@ -1079,7 +1079,7 @@ Check: 1) Document completeness 2) Code compliance for city/county/state 3) Cons
               {/* Precedents */}
               <Card style={{ padding:"1.5rem" }}>
                 <p style={{ fontSize:14, fontWeight:700, color:C.navy, marginBottom:4 }}>Similar Approved Permits</p>
-                <p style={{ fontSize:12, color:C.muted, marginBottom:12 }}>Recently issued permits of the same type in Woodside</p>
+                <p style={{ fontSize:12, color:C.muted, marginBottom:12 }}>Recently issued permits of the same type in {app?.city_display?.split(',')[0]?.trim() || app?.parcel_data?.city || 'Woodside'}</p>
                 {!analysis.precedents?.length ? (
                   <p style={{ fontSize:13, color:C.muted }}>No similar precedents found in database yet. Database builds over time as permits are analyzed.</p>
                 ) : (
