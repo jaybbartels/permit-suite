@@ -294,6 +294,16 @@ function QueueView({ user, onSelect, cityFilter, setCityFilter, department }) {
 }
 
 // ── Review Panel ──────────────────────────────────────────────────────────────
+const ALL_DEPTS = [
+  { id:'planning',             label:'Planning' },
+  { id:'building',             label:'Building' },
+  { id:'engineering',          label:'Engineering' },
+  { id:'fire',                 label:'Woodside Fire' },
+  { id:'geologist',            label:'Town Geologist' },
+  { id:'environmental_health', label:'San Mateo County Environmental Health' },
+  { id:'asrb',                 label:'Architecture and Site Review Board' },
+];
+
 function ReviewPanel({ appId, user, department, onBack, onStatusChange }) {
   const [app,           setApp]          = useState(null);
   const [loading,       setLoading]      = useState(true);
@@ -958,6 +968,17 @@ Check: 1) Document completeness 2) Code compliance for city/county/state 3) Cons
 }
 
 // ── Main App ──────────────────────────────────────────────────────────────────
+const DEPARTMENTS = [
+  { id: 'overall',             label: 'Overall Review',                        icon: '🏛️' },
+  { id: 'planning',            label: 'Planning',                              icon: '📐' },
+  { id: 'building',            label: 'Building',                              icon: '🏗️' },
+  { id: 'engineering',         label: 'Engineering',                           icon: '⚙️' },
+  { id: 'fire',                label: 'Woodside Fire',                         icon: '🚒' },
+  { id: 'geologist',           label: 'Town Geologist',                        icon: '🪨' },
+  { id: 'environmental_health',label: 'San Mateo County Environmental Health', icon: '🌿' },
+  { id: 'asrb',                label: 'Architecture & Site Review Board',      icon: '🏛' },
+];
+
 export default function App() {
   const [user,        setUser]       = useState(null);
   const [authReady,   setAuthReady]  = useState(false);
@@ -996,17 +1017,6 @@ export default function App() {
   }
 
   const [department, setDepartment] = useState(null);
-
-  const DEPARTMENTS = [
-    { id: 'overall',             label: 'Overall Review',                        icon: '🏛️' },
-    { id: 'planning',            label: 'Planning',                              icon: '📐' },
-    { id: 'building',            label: 'Building',                              icon: '🏗️' },
-    { id: 'engineering',         label: 'Engineering',                           icon: '⚙️' },
-    { id: 'fire',                label: 'Woodside Fire',                         icon: '🚒' },
-    { id: 'geologist',           label: 'Town Geologist',                        icon: '🪨' },
-    { id: 'environmental_health',label: 'San Mateo County Environmental Health', icon: '🌿' },
-    { id: 'asrb',                label: 'Architecture & Site Review Board',      icon: '🏛' },
-  ];
 
   useEffect(() => { setView("queue"); setSelectedApp(null); }, [department?.id]);
 
