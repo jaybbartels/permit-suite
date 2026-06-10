@@ -1,6 +1,5 @@
 // POST /api/permit/analyze
 // Returns fee estimate + 2 similar precedent permits for a permit application
-// Caches results in jurisdiction_codes (fees) and property_history (precedents)
 
 import { requireAuth, authError } from '../middleware/auth.js';
 
@@ -8,15 +7,7 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const SCHEMA = 'app_data';
 
-async function callAI(system, prompt, useSearch = true) {
-  const body = {
-    model: 'claude-haiku-4-5-20251001',
-    max_tokens: 800,
-    system,
-    messages: [{ role: 'user', content: prompt }],
-  };
-  if (useSearch) body.tools = [{ type: 'web_search_20250305', name: 'web_search' }];
-
+async function callAI(system, prompt) {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -24,7 +15,13 @@ async function callAI(system, prompt, useSearch = true) {
       'anthropic-version': '2023-06-01',
       'x-api-key': process.env.ANTHROPIC_API_KEY,
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 800,
+      tools: [{ type: 'web_search_20250305', name: 'web_search' }],
+      system,
+      messages: [{ role: 'user', content: prompt }],
+    }),
   });
   if (!res.ok) throw new Error(`Anthropic error: ${res.status}`);
   const data = await res.json();
@@ -34,12 +31,12 @@ async function callAI(system, prompt, useSearch = true) {
 function parseJSON(text) {
   const clean = text.replace(/```json|```/g, '').trim();
   try { return JSON.parse(clean); } catch {}
-  const m = clean.match(/\{[\s\S]*\}/);
+  const m = clean.match(/[\[{][\s\S]*[\]}]/);
   if (m) try { return JSON.parse(m[0]); } catch {}
   return null;
 }
 
-async function getCachedFees(city, state) {
+async function getFeeSchedule(city, state) {
   try {
     const res = await fetch(
       `${SUPABASE_URL}/rest/v1/jurisdiction_codes?state_code=eq.${state}&city_name=eq.${encodeURIComponent(city)}&topic=eq.permit_fees_structured&limit=1`,
@@ -47,171 +44,166 @@ async function getCachedFees(city, state) {
     );
     if (!res.ok) return null;
     const rows = await res.json();
-    if (!rows[0]) return null;
-    if (new Date(rows[0].expires_at) < new Date()) return null;
-    return rows[0].content;
+    return rows[0]?.content ?? null;
   } catch { return null; }
 }
 
-async function cacheFees(city, state, content) {
-  try {
-    await fetch(`${SUPABASE_URL}/rest/v1/jurisdiction_codes`, {
-      method: 'POST',
-      headers: {
-        'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}`,
-        'Content-Type': 'application/json', 'Content-Profile': SCHEMA,
-        'Prefer': 'resolution=merge-duplicates,return=minimal',
-      },
-      body: JSON.stringify({
-        level: 'city', state_code: state, county_name: null,
-        city_name: city, topic: 'permit_fees_structured',
-        content, source_url: 'https://www.woodsideca.gov/DocumentCenter/View/1070',
-        source_type: 'ai_search', fetched_at: new Date().toISOString(),
-        expires_at: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString(),
-      }),
-    });
-  } catch {}
-}
-
-async function cachePrecedent(precedent, city, state) {
-  try {
-    await fetch(`${SUPABASE_URL}/rest/v1/property_history`, {
-      method: 'POST',
-      headers: {
-        'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}`,
-        'Content-Type': 'application/json', 'Content-Profile': SCHEMA,
-        'Prefer': 'return=minimal',
-      },
-      body: JSON.stringify({
-        address_key: (precedent.address || '').toLowerCase().trim(),
-        apn: precedent.apn || null,
-        permit_number: precedent.permit_number || null,
-        permit_type: precedent.permit_type || null,
-        description: precedent.description || null,
-        status: precedent.status || 'issued',
-        issued_date: precedent.issued_date || null,
-        valuation: precedent.valuation || null,
-        source: 'etrakit',
-      }),
-    });
-  } catch {}
-}
-
-async function estimateFees(permitType, subType, city, state, projectValue) {
-  // Check cache first
-  const cached = await getCachedFees(city, state);
-  if (cached) {
-    return estimateFromSchedule(cached, permitType, subType, projectValue);
-  }
-
-  // Fetch fee schedule via AI
-  const text = await callAI(
-    'You are a permit fee researcher. Extract structured fee data. Output ONLY raw JSON.',
-    `Search for the current ${city}, ${state} building permit fee schedule.\n` +
-    `Find fees for: building permits, plan check fees, ADU fees, addition/remodel fees.\n` +
-    `Output ONLY this JSON:\n` +
-    `{\n` +
-    `  "building_permit_base": "description of base fee calculation",\n` +
-    `  "plan_check_fee": "usually % of building permit fee",\n` +
-    `  "adu_fee": "specific ADU fee if any",\n` +
-    `  "valuation_table": [{"range": "$0-$10,000", "fee": "$X"}],\n` +
-    `  "other_fees": [{"name": "fee name", "amount": "$X"}],\n` +
-    `  "source": "URL of fee schedule",\n` +
-    `  "effective_date": "date"\n` +
-    `}`
-  );
-
-  const feeData = parseJSON(text);
-  if (feeData) await cacheFees(city, state, feeData);
-
-  return estimateFromSchedule(feeData, permitType, subType, projectValue);
-}
-
-function estimateFromSchedule(feeData, permitType, subType, projectValue) {
-  if (!feeData) {
-    // Fallback estimates based on typical Woodside fees
-    const estimates = {
-      'new-construction': { permit: 15000, planCheck: 10500, total: 28500 },
-      'addition-remodel': { permit: 3500, planCheck: 2450, total: 7200 },
-      'adu':              { permit: 4200, planCheck: 2940, total: 9000 },
-      'default':          { permit: 2000, planCheck: 1400, total: 4500 },
-    };
-    const est = estimates[permitType] || estimates.default;
-    return {
-      permitFee: est.permit,
-      planCheckFee: est.planCheck,
-      totalEstimate: est.total,
-      confidence: 'low',
-      notes: 'Estimate based on typical Woodside fees. Verify with Building Dept at 650-851-6796.',
-      source: 'fallback',
-    };
-  }
-
-  // Use fee data to calculate
-  let permitFee = 2000;
-  let planCheckFee = 1400;
-
-  if (projectValue > 0 && feeData.valuation_table) {
-    // Find matching range
-    for (const row of feeData.valuation_table) {
-      const range = row.range || '';
-      const feeStr = row.fee || '';
-      const fee = parseFloat(feeStr.replace(/[^0-9.]/g, ''));
-      if (!isNaN(fee) && fee > 0) permitFee = fee;
+function calcPermitFee(valuation, feeSchedule) {
+  if (!feeSchedule?.valuation_based_fees) return 2000;
+  for (const row of feeSchedule.valuation_based_fees) {
+    if (valuation >= row.min && valuation <= row.max) {
+      if (row.formula === 'flat') return row.fee;
+      if (row.formula === 'base_plus_per_k') {
+        const extra = Math.ceil((valuation - row.base_threshold) / 1000);
+        return Math.round(row.fee + extra * row.per_k);
+      }
     }
   }
+  return 2000;
+}
 
-  if (feeData.plan_check_fee) {
-    const pct = parseFloat(feeData.plan_check_fee.match(/(\d+)/)?.[1] || '70');
-    planCheckFee = Math.round(permitFee * (pct / 100));
+function estimateValuation(permitType, subType, formData) {
+  // Use form data if available
+  if (formData?.project_valuation) return parseFloat(formData.project_valuation);
+  if (formData?.estimated_cost) return parseFloat(formData.estimated_cost);
+
+  // Estimate by permit type using Woodside min valuation rates
+  const sqft = formData?.square_footage || formData?.sqft || 0;
+  const estimates = {
+    'new-construction': sqft > 0 ? sqft * 300 : 800000,
+    'addition-remodel': sqft > 0 ? sqft * 200 : 150000,
+    'adu':              sqft > 0 ? sqft * 300 : 250000,
+    'pool':             120000,
+    'fence':            15000,
+    'mep':              25000,
+    'default':          75000,
+  };
+  return estimates[permitType] || estimates.default;
+}
+
+function buildFeeEstimate(permitType, subType, valuation, feeSchedule) {
+  // Check if minor permit type has flat fee
+  const minorMap = {
+    'hvac':         feeSchedule?.minor_permits?.hvac,
+    'water-heater': feeSchedule?.minor_permits?.water_heater,
+    'ev-charger':   feeSchedule?.minor_permits?.ev_charger,
+    'solar':        feeSchedule?.minor_permits?.solar_residential_15kw,
+    'generator':    feeSchedule?.minor_permits?.generator,
+    're-roof':      feeSchedule?.minor_permits?.reroof_small,
+  };
+
+  const flatFee = minorMap[subType];
+  let permitFee, planCheckFee, fireFee, geologyFee, asrbFee;
+
+  if (flatFee) {
+    permitFee = flatFee;
+    planCheckFee = 0;
+  } else {
+    permitFee = calcPermitFee(valuation, feeSchedule);
+    const pct = (feeSchedule?.plan_check_fee_pct || 70) / 100;
+    planCheckFee = Math.round(permitFee * pct);
   }
 
-  const fireFee = ['new-construction', 'adu', 'addition-remodel'].includes(permitType) ? 850 : 0;
-  const geologyFee = permitType === 'new-construction' ? 1200 : 0;
+  // Additional fees by permit type
+  fireFee     = ['new-construction','adu','addition-remodel','pool'].includes(permitType) ? 850 : 0;
+  geologyFee  = ['new-construction'].includes(permitType) ? 1200 : 0;
+  asrbFee     = ['new-construction','addition-remodel'].includes(permitType) ? 1500 : 0;
+
+  // State surcharges (approx 1% + strong motion)
+  const stateFee = Math.round(permitFee * 0.013);
+
+  const total = permitFee + planCheckFee + fireFee + geologyFee + asrbFee + stateFee;
 
   return {
+    estimatedValuation: valuation,
     permitFee,
     planCheckFee,
     fireFee,
     geologyFee,
-    totalEstimate: permitFee + planCheckFee + fireFee + geologyFee,
-    confidence: 'medium',
-    notes: `Based on ${feeData.effective_date || 'current'} Woodside fee schedule. Final fees determined at permit issuance.`,
-    source: feeData.source || 'Woodside fee schedule',
+    asrbFee,
+    stateSurcharges: stateFee,
+    totalEstimate: total,
+    breakdown: [
+      { label: 'Building permit fee', amount: permitFee },
+      ...(planCheckFee > 0 ? [{ label: 'Plan check fee (70%)', amount: planCheckFee }] : []),
+      ...(fireFee > 0 ? [{ label: 'WFPD fire review (est.)', amount: fireFee }] : []),
+      ...(geologyFee > 0 ? [{ label: 'Geology review (est.)', amount: geologyFee }] : []),
+      ...(asrbFee > 0 ? [{ label: 'ASRB review (est.)', amount: asrbFee }] : []),
+      { label: 'State surcharges (est.)', amount: stateFee },
+    ],
+    confidence: feeSchedule ? 'high' : 'low',
+    effectiveDate: feeSchedule?.effective_date || 'unknown',
+    notes: `Based on ${feeSchedule?.effective_date || 'current'} Woodside fee schedule. ${feeSchedule?.notes || ''} Final fees set by Building Official.`,
+    paymentNote: feeSchedule?.payment || 'Check with Building Dept for payment methods.',
   };
 }
 
 async function findPrecedents(permitType, subType, address, city, state) {
-  const text = await callAI(
-    'You are a permit records researcher. Search eTRAKiT and public permit databases. Output ONLY raw JSON.',
-    `Search the ${city}, ${state} eTRAKiT permit database at wood.csqrcloud.com for permits similar to:\n` +
-    `Permit type: ${permitType} / ${subType}\n` +
-    `Address: ${address}\n\n` +
-    `Find 2 recently ISSUED or APPROVED permits of the same type in ${city}.\n` +
-    `Output ONLY this JSON array:\n` +
-    `[\n` +
-    `  {\n` +
-    `    "permit_number": "B2024-001",\n` +
-    `    "address": "123 Oak Lane, ${city}",\n` +
-    `    "permit_type": "ADU",\n` +
-    `    "description": "Detached ADU 800 sq ft",\n` +
-    `    "status": "Issued",\n` +
-    `    "issued_date": "2024-03-15",\n` +
-    `    "valuation": 250000,\n` +
-    `    "notes": "any relevant notes"\n` +
-    `  }\n` +
-    `]\n` +
-    `If you cannot find 2 permits, return as many as you find. Return [] if none found.`
-  );
-
-  const precedents = parseJSON(text);
-  if (Array.isArray(precedents) && precedents.length > 0) {
-    // Cache each precedent
-    for (const p of precedents) {
-      await cachePrecedent(p, city, state);
+  // Check cache first
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/property_history?permit_type=ilike.%25${encodeURIComponent(permitType)}%25&source=eq.etrakit&order=issued_date.desc&limit=5`,
+      { headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}`, 'Accept-Profile': SCHEMA } }
+    );
+    if (res.ok) {
+      const rows = await res.json();
+      if (rows.length >= 2) {
+        return rows.slice(0, 2).map(r => ({
+          permit_number: r.permit_number,
+          address: r.address_key,
+          permit_type: r.permit_type,
+          description: r.description,
+          status: r.status,
+          issued_date: r.issued_date,
+          valuation: r.valuation,
+          source: 'cached',
+        }));
+      }
     }
-    return precedents.slice(0, 2);
-  }
+  } catch {}
+
+  // Search eTRAKiT via AI
+  try {
+    const text = await callAI(
+      'You are a permit records researcher. Search public permit databases. Output ONLY a JSON array.',
+      `Search the ${city}, ${state} eTRAKiT permit database at wood.csqrcloud.com for recently ISSUED permits similar to:\n` +
+      `Permit type: ${permitType} / ${subType || 'general'}\n` +
+      `Find 2 recently issued/approved permits of the same type in ${city}, CA.\n` +
+      `Also search recent Woodside CA permit records online.\n` +
+      `Output ONLY this JSON array (no markdown):\n` +
+      `[{"permit_number":"B2024-001","address":"123 Oak Ln, Woodside CA","permit_type":"ADU","description":"Detached ADU 800 sqft","status":"Issued","issued_date":"2024-03-15","valuation":250000}]\n` +
+      `Return [] if none found.`
+    );
+
+    const precedents = parseJSON(text);
+    if (Array.isArray(precedents) && precedents.length > 0) {
+      // Cache results
+      for (const p of precedents.slice(0, 2)) {
+        try {
+          await fetch(`${SUPABASE_URL}/rest/v1/property_history`, {
+            method: 'POST',
+            headers: {
+              'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}`,
+              'Content-Type': 'application/json', 'Content-Profile': SCHEMA,
+              'Prefer': 'return=minimal',
+            },
+            body: JSON.stringify({
+              address_key: (p.address || '').toLowerCase().trim(),
+              permit_number: p.permit_number || null,
+              permit_type: p.permit_type || permitType,
+              description: p.description || null,
+              status: p.status || 'Issued',
+              issued_date: p.issued_date || null,
+              valuation: p.valuation || null,
+              source: 'etrakit',
+            }),
+          });
+        } catch {}
+      }
+      return precedents.slice(0, 2);
+    }
+  } catch {}
+
   return [];
 }
 
@@ -235,23 +227,14 @@ export default async function handler(req, res) {
     try { body = JSON.parse(Buffer.concat(chunks).toString()); } catch { body = {}; }
   }
 
-  const {
-    application_id,
-    permit_type,
-    sub_type,
-    address,
-    city = 'Woodside',
-    state = 'CA',
-    project_value = 0,
-  } = body || {};
-
+  const { application_id, permit_type, sub_type, address, city = 'Woodside', state = 'CA', form_data = {} } = body || {};
   if (!application_id) return res.status(400).json({ error: 'application_id required' });
 
   try {
-    const [feeEstimate, precedents] = await Promise.all([
-      estimateFees(permit_type, sub_type, city, state, project_value),
-      findPrecedents(permit_type, sub_type, address, city, state),
-    ]);
+    const [feeSchedule] = await Promise.all([getFeeSchedule(city, state)]);
+    const valuation = estimateValuation(permit_type, sub_type, form_data);
+    const feeEstimate = buildFeeEstimate(permit_type, sub_type, valuation, feeSchedule);
+    const precedents = await findPrecedents(permit_type, sub_type, address, city, state);
 
     return res.status(200).json({
       application_id,
