@@ -1,15 +1,16 @@
 import React from "react";
 import { useState, useEffect, useCallback } from "react";
-import { getSession, getUser, signIn, signUp, signOut, saveSession, authHeaders } from "./auth.js";
+import { getSession, getUser, signIn, signUp, signOut, saveSession, authHeaders, authHeadersAsync } from "./auth.js";
 import { dbSaveApplication, dbLoadApplications, dbLoadApplication, dbSaveDocument } from "./db.js";
 
 // ── API proxy ─────────────────────────────────────────────────────────────────
 const API = (import.meta.env.VITE_API_URL || "https://permit-suite-api.vercel.app") + "/api/claude";
 async function callClaude(payload) {
   try {
+    const hdrs = await authHeadersAsync();
     const res = await fetch(API, {
       method: "POST",
-      headers: authHeaders(),
+      headers: hdrs,
       body: JSON.stringify({ model: "claude-haiku-4-5-20251001", ...payload }),
     });
     if (!res.ok) return { ok: false };
@@ -848,6 +849,11 @@ export default function App() {
   const [submitted,  setSubmitted]  = useState(false);
   const [myApps,     setMyApps]     = useState([]);
   const [showList,   setShowList]   = useState(false);
+  const [selectedMyApp, setSelectedMyApp] = useState(null);
+  const [appReport,     setAppReport]     = useState(null);
+  const [appComments,   setAppComments]   = useState([]);
+  const [responses,     setResponses]     = useState({});
+  const [loadingReport, setLoadingReport] = useState(false);
 
   // Check session on load
   useEffect(() => {
@@ -860,6 +866,45 @@ export default function App() {
   async function loadMyApps(userId) {
     const apps = await dbLoadApplications(userId);
     setMyApps(apps || []);
+  }
+
+  async function loadAppReport(appId) {
+    setLoadingReport(true);
+    try {
+      const API_BASE = import.meta.env.VITE_API_URL || "https://permit-suite-api.vercel.app";
+      const hdrs = await authHeadersAsync();
+      const [reportRes, commentsRes] = await Promise.all([
+        fetch(`${API_BASE}/api/review/report?application_id=${appId}`, { headers: hdrs }),
+        fetch(`${API_BASE}/api/review/comments?application_id=${appId}`, { headers: hdrs }),
+      ]);
+      if (reportRes.ok) {
+        const { report } = await reportRes.json();
+        setAppReport(report);
+      }
+      if (commentsRes.ok) {
+        const { comments } = await commentsRes.json();
+        setAppComments(comments || []);
+      }
+    } catch {}
+    setLoadingReport(false);
+  }
+
+  async function submitResponse(commentId, content) {
+    if (!content?.trim() || !user) return;
+    try {
+      const API_BASE = import.meta.env.VITE_API_URL || "https://permit-suite-api.vercel.app";
+      const hdrs = await authHeadersAsync();
+      await fetch(`${API_BASE}/api/review/respond`, {
+        method: 'POST', headers: hdrs,
+        body: JSON.stringify({
+          comment_id: commentId,
+          application_id: selectedMyApp.id,
+          content,
+        }),
+      });
+      setResponses(prev => ({ ...prev, [commentId]: '' }));
+      await loadAppReport(selectedMyApp.id);
+    } catch {}
   }
 
   function updateApp(updates) {
@@ -933,31 +978,143 @@ export default function App() {
 
   // ── My Applications list ────────────────────────────────────────────────────
   if (showList) {
+    const DEPT_LABELS = {
+      planning:'Planning', building:'Building', engineering:'Engineering',
+      fire:'Woodside Fire', geologist:'Town Geologist',
+      environmental_health:'San Mateo County EH', asrb:'ASRB',
+    };
+
     return (
       <div style={{ minHeight:"100vh", background:C.gray }}>
         <style>{css}</style>
-        <Header user={user} onSignOut={handleSignOut} saving={saving} onMyApps={()=>setShowList(false)} onNew={()=>{setApp({});setStep(0);setCompleted([]);setSubmitted(false);setShowList(false);}} showBack />
+        <Header user={user} onSignOut={handleSignOut} saving={saving}
+          onMyApps={selectedMyApp ? ()=>{ setSelectedMyApp(null); setAppReport(null); setAppComments([]); } : ()=>setShowList(false)}
+          onNew={()=>{setApp({});setStep(0);setCompleted([]);setSubmitted(false);setShowList(false);}} showBack />
         <div style={{ maxWidth:700, margin:"2rem auto", padding:"0 1rem" }}>
-          <h2 style={{ fontSize:20, fontWeight:700, color:C.navy, marginBottom:"1.5rem" }}>My Applications</h2>
-          {myApps.length === 0 ? (
-            <div style={{ background:"#fff", borderRadius:10, padding:"3rem", textAlign:"center", color:C.muted, fontSize:14 }}>
-              No applications yet. Start a new one!
+
+          {/* Application detail + report view */}
+          {selectedMyApp ? (
+            <div>
+              <button onClick={()=>{ setSelectedMyApp(null); setAppReport(null); setAppComments([]); }}
+                style={{ background:"none", border:"none", color:C.sky, fontSize:13, cursor:"pointer", fontWeight:600, marginBottom:12, padding:0 }}>
+                ← Back to My Applications
+              </button>
+              <div style={{ background:"#fff", border:`1.5px solid ${C.border}`, borderRadius:10, padding:"1.25rem", marginBottom:12 }}>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
+                  <div>
+                    <p style={{ fontWeight:700, fontSize:16, color:C.navy }}>{selectedMyApp.address||"No address"}</p>
+                    <p style={{ fontSize:12, color:C.muted, marginTop:3 }}>{selectedMyApp.permit_display||"No permit type"}</p>
+                    {selectedMyApp.tracking_number && <p style={{ fontSize:11, color:C.green, marginTop:3 }}>✓ {selectedMyApp.tracking_number}</p>}
+                  </div>
+                  <span style={{ fontSize:11, padding:"3px 10px", borderRadius:20,
+                    background:selectedMyApp.status==="reviewed"?"#FDEBD0":selectedMyApp.status==="submitted"?"#EAFAF1":"#EBF5FB",
+                    color:selectedMyApp.status==="reviewed"?"#784212":selectedMyApp.status==="submitted"?C.green:C.sky,
+                    fontWeight:600 }}>{selectedMyApp.status}</span>
+                </div>
+              </div>
+
+              {loadingReport ? (
+                <div style={{ background:"#fff", borderRadius:10, padding:"2rem", textAlign:"center", color:C.muted }}>Loading report…</div>
+              ) : !appReport ? (
+                <div style={{ background:"#fff", borderRadius:10, padding:"2rem", textAlign:"center", color:C.muted, fontSize:13 }}>
+                  <p style={{ fontSize:22, marginBottom:8 }}>⏳</p>
+                  <p style={{ fontWeight:600, color:C.navy }}>Review in progress</p>
+                  <p style={{ marginTop:4 }}>The town is reviewing your application. You will be notified when the review report is ready.</p>
+                </div>
+              ) : (
+                <div>
+                  <div style={{ background:"#fff", border:`1.5px solid ${C.border}`, borderRadius:10, padding:"1.25rem", marginBottom:12 }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
+                      <div>
+                        <p style={{ fontWeight:700, fontSize:15, color:C.navy }}>Official Review Report</p>
+                        <p style={{ fontSize:12, color:C.muted, marginTop:2 }}>
+                          Version {appReport.version} · Issued {new Date(appReport.issued_at).toLocaleDateString()} · By {appReport.issued_by_name}
+                        </p>
+                      </div>
+                      <span style={{ fontSize:11, padding:"3px 10px", borderRadius:4, background:"#D5F5E3", color:C.green, fontWeight:600 }}>Issued</span>
+                    </div>
+                    <div style={{ display:"flex", gap:10, flexWrap:"wrap" }}>
+                      <div style={{ background:C.gray, borderRadius:8, padding:"10px 14px", flex:1, minWidth:100 }}>
+                        <p style={{ fontSize:20, fontWeight:700, color:C.navy, margin:0 }}>{appReport.report_content?.totalComments || 0}</p>
+                        <p style={{ fontSize:11, color:C.muted, marginTop:2 }}>Total comments</p>
+                      </div>
+                      <div style={{ background:C.gray, borderRadius:8, padding:"10px 14px", flex:1, minWidth:100 }}>
+                        <p style={{ fontSize:20, fontWeight:700, color:C.orange, margin:0 }}>{appReport.report_content?.totalCorrections || 0}</p>
+                        <p style={{ fontSize:11, color:C.muted, marginTop:2 }}>Corrections required</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Comments by department with response fields */}
+                  {(appReport.report_content?.departments || []).map(dept => (
+                    dept.comments.length === 0 ? null :
+                    <div key={dept.department} style={{ background:"#fff", border:`1.5px solid ${C.border}`, borderRadius:10, padding:"1.25rem", marginBottom:10 }}>
+                      <p style={{ fontSize:12, fontWeight:700, color:C.navy, textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:12 }}>{dept.label}</p>
+                      {dept.comments.map((c, i) => {
+                        const fullComment = appComments.find(ac => ac.id === c.id);
+                        return (
+                          <div key={i} style={{ borderLeft:`3px solid ${c.is_correction?"#E67E22":C.blue}`, paddingLeft:12, marginBottom:16 }}>
+                            <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
+                              <span style={{ fontSize:12, fontWeight:600, color:C.text }}>{c.reviewer}</span>
+                              {c.is_correction && <span style={{ fontSize:10, padding:"2px 8px", borderRadius:4, background:"#FDEBD0", color:"#784212", fontWeight:600 }}>Correction required</span>}
+                            </div>
+                            <p style={{ fontSize:13, color:C.text, lineHeight:1.6, marginBottom:10 }}>{c.content}</p>
+                            {/* Response field */}
+                            <div style={{ background:C.gray, borderRadius:8, padding:"10px 12px" }}>
+                              <p style={{ fontSize:11, color:C.muted, marginBottom:6, fontWeight:600 }}>YOUR RESPONSE</p>
+                              <textarea
+                                value={responses[c.id] || ''}
+                                onChange={e => setResponses(prev => ({...prev, [c.id]: e.target.value}))}
+                                placeholder="Type your response to this comment…"
+                                style={{ width:"100%", minHeight:70, borderRadius:6, border:`1px solid ${C.border}`, padding:"6px 10px", fontSize:12, resize:"vertical", boxSizing:"border-box" }}
+                              />
+                              <div style={{ display:"flex", justifyContent:"flex-end", marginTop:6 }}>
+                                <Btn size="sm" onClick={()=>submitResponse(c.id, responses[c.id])}
+                                  disabled={!responses[c.id]?.trim()}>
+                                  Submit Response
+                                </Btn>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           ) : (
-            <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-              {myApps.map(a => (
-                <div key={a.id} style={{ background:"#fff", border:`1.5px solid ${C.border}`, borderRadius:8, padding:"1rem 1.25rem", display:"flex", justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:10 }}>
-                  <div>
-                    <p style={{ fontWeight:600, fontSize:14, color:C.navy }}>{a.address||"No address"}</p>
-                    <p style={{ fontSize:12, color:C.muted, marginTop:3 }}>{a.permit_display||"No permit type"} · {a.city_display||""}</p>
-                    {a.tracking_number && <p style={{ fontSize:11, color:C.green, marginTop:3 }}>✓ {a.tracking_number}</p>}
-                  </div>
-                  <div style={{ display:"flex", gap:8, alignItems:"center" }}>
-                    <span style={{ fontSize:11, padding:"3px 10px", borderRadius:20, background:a.status==="submitted"?"#EAFAF1":"#EBF5FB", color:a.status==="submitted"?C.green:C.sky, fontWeight:600 }}>{a.status}</span>
-                    {a.status !== "submitted" && <Btn size="sm" onClick={()=>resumeApp(a)}>Resume →</Btn>}
-                  </div>
+            /* Applications list */
+            <div>
+              <h2 style={{ fontSize:20, fontWeight:700, color:C.navy, marginBottom:"1.5rem" }}>My Applications</h2>
+              {myApps.length === 0 ? (
+                <div style={{ background:"#fff", borderRadius:10, padding:"3rem", textAlign:"center", color:C.muted, fontSize:14 }}>
+                  No applications yet. Start a new one!
                 </div>
-              ))}
+              ) : (
+                <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+                  {myApps.map(a => (
+                    <div key={a.id} style={{ background:"#fff", border:`1.5px solid ${C.border}`, borderRadius:8, padding:"1rem 1.25rem", cursor:"pointer" }}
+                      onClick={()=>{ setSelectedMyApp(a); loadAppReport(a.id); }}>
+                      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", flexWrap:"wrap", gap:10 }}>
+                        <div>
+                          <p style={{ fontWeight:600, fontSize:14, color:C.navy }}>{a.address||"No address"}</p>
+                          <p style={{ fontSize:12, color:C.muted, marginTop:3 }}>{a.permit_display||"No permit type"} · {a.city_display||""}</p>
+                          {a.tracking_number && <p style={{ fontSize:11, color:C.green, marginTop:3 }}>✓ {a.tracking_number}</p>}
+                        </div>
+                        <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+                          <span style={{ fontSize:11, padding:"3px 10px", borderRadius:20,
+                            background:a.status==="reviewed"?"#FDEBD0":a.status==="submitted"?"#EAFAF1":"#EBF5FB",
+                            color:a.status==="reviewed"?"#784212":a.status==="submitted"?C.green:C.sky,
+                            fontWeight:600 }}>{a.status}</span>
+                          {a.status==="reviewed" && <span style={{ fontSize:11, color:C.orange }}>⚠ Review ready</span>}
+                          {a.status !== "submitted" && a.status !== "reviewed" && <Btn size="sm" onClick={e=>{e.stopPropagation();resumeApp(a);}}>Resume →</Btn>}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>
