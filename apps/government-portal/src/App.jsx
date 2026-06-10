@@ -326,7 +326,6 @@ function ReviewPanel({ appId, user, department, onBack, onStatusChange }) {
   const [isCorrectDept,  setIsCorrectDept] = useState(false);
   const [reviewComments, setReviewComments] = useState([]);
   const [applicantResponses, setApplicantResponses] = useState([]);
-  const [applicantResponses, setApplicantResponses] = useState([]);
   const [issuedReport,   setIssuedReport]   = useState(null);
   const API_URL = import.meta.env.VITE_API_URL || "https://permit-suite-api.vercel.app";
 
