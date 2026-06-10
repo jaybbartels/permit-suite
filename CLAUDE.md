@@ -284,3 +284,25 @@ Note: VITE_API_URL must be https://permit-suite-api.vercel.app
 - 🔍 Property Inspection    — https://property-inspection-delta.vercel.app
 - 🧭 Permit Assistant       — https://permit-assistant.vercel.app
 - ⚙️  API Service            — https://permit-suite-api.vercel.app
+
+## Fee & Precedents tab — June 10 2026
+Added to government portal ReviewPanel:
+- Real Woodside fee calculation from Aug 2024 fee schedule stored in jurisdiction_codes
+- Permit fee calculated from project valuation using actual fee table tiers
+- Plan check (70%), fire review ($850), geology ($1,200), ASRB ($1,500) added
+- Precedent search: checks property_history cache first, then AI web search
+- City-specific portal hints for SF, Menlo Park, Palo Alto, Woodside etc
+- Woodside seeded with 12 real permit records
+- Cache builds over time — each AI search result stored in property_history
+
+## Known limitations
+- Small cities (Menlo Park, Scotts Valley) not well indexed — no AI results
+- eTRAKiT blocks server-side scraping — need browser-side solution long term
+- Fee schedule only covers Woodside — other cities use fallback estimates
+
+## Next steps
+1. Seed Menlo Park permit history manually
+2. Browser-side eTRAKiT scraper for Woodside
+3. Remove api/debug/lookup.js before public launch
+4. Wire inspection scheduling from approved permits
+5. Stripe checkout for paid tiers
