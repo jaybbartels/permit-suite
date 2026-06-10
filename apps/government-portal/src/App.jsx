@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { getUser, signIn, signUp, signOut } from "./auth.js";
+import { getUser, signIn, signUp, signOut, authHeadersAsync } from "./auth.js";
 import { 
   dbGetQueue, dbGetApplication, dbUpdateApplicationStatus,
   dbGetComments, dbPostComment, dbSaveAIReview, dbGetAIReview,
@@ -172,7 +172,6 @@ function QueueView({ user, onSelect, cityFilter, setCityFilter, department }) {
     if (department && department.id !== 'overall') {
       try {
         const API_URL = import.meta.env.VITE_API_URL || "https://permit-suite-api.vercel.app";
-        const { authHeadersAsync } = await import('./auth.js');
         const hdrs = await authHeadersAsync();
         const res = await fetch(`${API_URL}/api/review/queue?department=${department.id}`, { headers: hdrs });
         if (res.ok) {
@@ -348,7 +347,6 @@ function ReviewPanel({ appId, user, department, onBack, onStatusChange }) {
 
   async function loadReviewComments() {
     try {
-      const { authHeadersAsync } = await import('./auth.js');
       const hdrs = await authHeadersAsync();
       const res = await fetch(`${API_URL}/api/review/comments?application_id=${appId}`, { headers: hdrs });
       if (res.ok) {
@@ -477,7 +475,6 @@ Check: 1) Document completeness 2) Code compliance for city/county/state 3) Cons
 
   async function loadReviewStatus() {
     try {
-      const { authHeadersAsync } = await import('./auth.js');
       const hdrs = await authHeadersAsync();
       const res = await fetch(`${API_URL}/api/review/status?application_id=${appId}`, { headers: hdrs });
       if (res.ok) {
@@ -491,7 +488,6 @@ Check: 1) Document completeness 2) Code compliance for city/county/state 3) Cons
   async function handleAssignDepts(depts) {
     setAssigning(true);
     try {
-      const { authHeadersAsync } = await import('./auth.js');
       const hdrs = await authHeadersAsync();
       await fetch(`${API_URL}/api/review/assign`, {
         method: 'POST', headers: hdrs,
@@ -506,7 +502,6 @@ Check: 1) Document completeness 2) Code compliance for city/county/state 3) Cons
     if (!deptComment.trim() || !department) return;
     setPostingDept(true);
     try {
-      const { authHeadersAsync } = await import('./auth.js');
       const hdrs = await authHeadersAsync();
       const res = await fetch(`${API_URL}/api/review/comments`, {
         method: 'POST', headers: hdrs,
@@ -528,7 +523,6 @@ Check: 1) Document completeness 2) Code compliance for city/county/state 3) Cons
 
   async function loadDeptComments() {
     try {
-      const { authHeadersAsync } = await import('./auth.js');
       const hdrs = await authHeadersAsync();
       const deptId = department?.id;
       if (!deptId) return;
@@ -542,7 +536,6 @@ Check: 1) Document completeness 2) Code compliance for city/county/state 3) Cons
 
   async function handleIssueReport() {
     try {
-      const { authHeadersAsync } = await import('./auth.js');
       const hdrs = await authHeadersAsync();
       const res = await fetch(`${API_URL}/api/review/report`, {
         method: 'POST', headers: hdrs,
@@ -890,7 +883,6 @@ Check: 1) Document completeness 2) Code compliance for city/county/state 3) Cons
                         <label style={{ fontSize:11, color:C.muted, display:"flex", alignItems:"center", gap:4, cursor:"pointer" }}>
                           <input type="checkbox" checked={c.is_included !== false}
                             onChange={async e => {
-                              const { authHeadersAsync } = await import('./auth.js');
                               const hdrs = await authHeadersAsync();
                               await fetch(`${API_URL}/api/review/comments`, {
                                 method:'PATCH', headers:hdrs,
